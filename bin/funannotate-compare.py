@@ -151,6 +151,7 @@ sm_backbones = []
 transmembrane = []
 cogs = []
 meropsold = []
+phibase = []  # added by NW
 num_input = len(args.input)
 if num_input == 0:
     lib.log.error("Error, you did not specify an input, -i")
@@ -187,7 +188,7 @@ for i in range(0,num_input):
         sys.exit(1)
     stats.append(genomeStats)
     #this function will return list of dictionaries for each functional category
-    functional = lib.getGBKannotation(GBK, FUNDB)
+    functional = lib.getGBKannotation(GBK, FUNDB)  # modified library function for PHI annotations
     #split those dictionaries and append to master list for each group of annotation
     pfam.append(functional[0])
     ipr.append(functional[1])
@@ -200,6 +201,7 @@ for i in range(0,num_input):
     sm_backbones.append(functional[10])
     eggnog.append(functional[2])
     merops.append(functional[4])
+    phibase.append(functional[11])  # added by NW
     if stats[i][1]:
         name = stats[i][0].replace(' ', '_')+'_'+stats[i][1]
     else:
@@ -401,12 +403,14 @@ lib.log.info("Summarizing MEROPS protease results")
 if not os.path.isdir(os.path.join(args.out, 'merops')):
     os.makedirs(os.path.join(args.out, 'merops'))
 
-MEROPS = {'A': 'Aspartic Peptidase', 'C': 'Cysteine Peptidase', 'G': 'Glutamic Peptidase', 'M': 'Metallo Peptidase', 'N': 'Asparagine Peptide Lyase', 'P': 'Mixed Peptidase','S': 'Serine Peptidase', 'T': 'Threonine Peptidase', 'U': 'Unknown Peptidase', 'I': 'Protease Inhibitors'}
+MEROPS = {'A': 'Aspartic Peptidase', 'C': 'Cysteine Peptidase', 'G': 'Glutamic Peptidase', 'M': 'Metallo Peptidase',
+          'N': 'Asparagine Peptide Lyase', 'P': 'Mixed Peptidase','S': 'Serine Peptidase', 'T': 'Threonine Peptidase',
+          'U': 'Unknown Peptidase', 'I': 'Protease Inhibitors'}
 #convert to counts
 updatemerops = []
 for x in range(0, len(merops)):
-	if None in merops[x]:
-		lib.log.error("Merops annotation was run with older database than currently installed, please re-run funannotate annotate for %s" % scinames[x])
+    if None in merops[x]:
+        lib.log.error("Merops annotation was run with older database than currently installed, please re-run funannotate annotate for %s" % scinames[x])
 		updatemerops.append({})
 	else:
 		updatemerops.append(merops[x])
@@ -438,26 +442,26 @@ else:
     ymax = round_max
 if round_max == 100 and diff > 50:
     ymax = max_num + 10
-#recombine sums
+# recombine sums
 enzymes = ['A', 'C', 'G', 'M', 'N', 'P', 'S', 'T', 'U', 'I']
 meropsShort = pd.concat([meropsA, meropsC, meropsG, meropsM, meropsN, meropsP, meropsS, meropsT, meropsU, meropsI], axis=1, keys=enzymes)
 meropsShort['species'] = names
 meropsShort.set_index('species', inplace=True)
-#remove any columns with no hits
+# remove any columns with no hits
 meropsShort = meropsShort.loc[:, (meropsShort != 0).any(axis=0)]
 meropsall = meropsdf.transpose()
 
-#write to file
+# write to file
 meropsdf.transpose().to_csv(os.path.join(args.out, 'merops', 'MEROPS.all.results.csv'))
 meropsShort.transpose().to_csv(os.path.join(args.out, 'merops', 'MEROPS.summary.results.csv'))
 
 if not meropsall.empty:
-	#draw plots for merops data
-	#stackedbar graph
+	# draw plots for merops data
+	# stacked bar graph
 	if len(args.input) > 1:
 		lib.drawStackedBar(meropsShort, 'MEROPS families', MEROPS, ymax, os.path.join(args.out, 'merops', 'MEROPS.graph.pdf'))
 
-	#drawheatmap of all merops families where there are any differences 
+	# draw heatmap of all merops families where there are any differences
 	if len(args.input) > 1:
 		stdev = meropsall.std(axis=1)
 		meropsall['stdev'] = stdev
@@ -483,6 +487,17 @@ with open(os.path.join(args.out, 'merops.html'), 'w') as output:
     output.write(lib.MEROPS)
     output.write(meropsall.to_html(escape=False, index=False, classes='table table-hover'))
     output.write(lib.FOOTER)
+
+##############################################
+
+####PHI################################
+lib.log.info("Summarizing Pathogen-Host Interaction annotation results")
+if not os.path.isdir(os.path.join(args.out, 'phibase')):
+    os.makedirs(os.path.join(args.out, 'phibase'))
+
+#convert to counts
+PHIdf = lib.convert2counts(phibase)
+
 
 #######################################################
 
@@ -934,9 +949,9 @@ else:
     scoCount = 0
     singletons = 0
     orthos = 0
-    stats[i].append("{0:,}".format(singletons))
-    stats[i].append("{0:,}".format(orthos))
-    stats[i].append("{0:,}".format(scoCount))   
+    stats[0].append("{0:,}".format(singletons))  # fixed bug
+    stats[0].append("{0:,}".format(orthos))  # fixed bug
+    stats[0].append("{0:,}".format(scoCount))  # fixed bug
 
 for i in range(0, len(stats)):     
     summary.append(stats[i])
@@ -955,7 +970,7 @@ with open(os.path.join(args.out, 'stats.html'), 'w') as output:
     output.write(lib.FOOTER)
 ############################################
 
-######summarize all annotation for each gene in a table
+######summarize all annotation for each genome in a table
 lib.log.info("Compiling all annotations for each genome")
 
 #get orthology into dictionary
@@ -990,7 +1005,8 @@ with open(os.path.join(go_folder, 'associations.txt'), 'rU') as input:
 
 iprDict = lib.dictFlipLookup(ipr, INTERPRO)
 pfamDict = lib.dictFlipLookup(pfam, PFAM)
-meropsDict = lib.dictFlip(updatemerops)  
+meropsDict = lib.dictFlip(updatemerops)
+phiDict = lib.dictFlip(PHIdf)  # added by NW
 cazyDict = lib.dictFlip(cazy)
 TMDict = lib.busco_dictFlip(transmembrane)
 
@@ -1003,7 +1019,7 @@ for k,v in iprDict.items():
             TFLookup[k] = TFDict.get(IPRid)      
 
 table = []
-header = ['GeneID','scaffold:start-end','strand','length','description', 'Ortho Group', 'EggNog', 'BUSCO', 'Secreted', 'TransMembrane', 'Protease family', 'CAZyme family', 'Transcription factor', 'InterPro Domains', 'PFAM Domains', 'GO terms', 'SecMet Cluster', 'SMCOG']
+header = ['GeneID','scaffold:start-end','strand','length','description', 'Ortho Group', 'EggNog', 'BUSCO', 'Secreted', 'TransMembrane', 'Protease family', 'CAZyme family', 'Transcription factor', 'InterPro Domains', 'PFAM Domains', 'GO terms', 'SecMet Cluster', 'SMCOG', 'PHI-base ID']
 for y in range(0,num_input):
     outputname = os.path.join(args.out, 'annotations', scinames[y]+'.all.annotations.tsv')
     with open(outputname, 'w') as output:

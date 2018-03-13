@@ -9,7 +9,7 @@ with warnings.catch_warnings():
 from Bio import BiopythonWarning
 warnings.simplefilter('ignore', BiopythonWarning)
 
-#get the working directory, so you can move back into DB folder to find the files you need
+# get the working directory, so you can move back into DB folder to find the files you need
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 parentdir = os.path.dirname(currentdir)
 sys.path.insert(0,parentdir)
@@ -172,6 +172,7 @@ DBURL = { 'uniprot': 'ftp://ftp.uniprot.org/pub/databases/uniprot/current_releas
         'interpro': 'ftp://ftp.ebi.ac.uk/pub/databases/interpro/interpro.xml.gz',
         'gene2product': 'https://raw.githubusercontent.com/nextgenusfs/gene2product/master/ncbi_cleaned_gene_products.txt'}
 
+
 class suppress_stdout_stderr(object):
     '''
     A context manager for doing a "deep suppression" of stdout and stderr in 
@@ -201,11 +202,13 @@ class suppress_stdout_stderr(object):
         os.close(self.null_fds[0])
         os.close(self.null_fds[1])
 
+
 class colr:
     GRN = '\033[92m'
     END = '\033[0m'
     WARN = '\033[93m'
-    
+
+
 class gzopen(object):
    """Generic opener that decompresses gzipped files
    if needed. Encapsulates an open file or a GzipFile.
@@ -296,31 +299,31 @@ def Fzip_inplace(input):
 def CheckFASTQandFix(forward, reverse):
     from Bio.SeqIO.QualityIO import FastqGeneralIterator
     from itertools import izip, izip_longest
-    #open and check first header, if okay exit, if not fix
+    # open and check first header, if okay exit, if not fix
     file1 = FastqGeneralIterator(gzopen(forward))
     file2 = FastqGeneralIterator(gzopen(reverse))
     check = True
     for read1, read2 in izip(file1, file2):
-        #see if index is valid
+        # see if index is valid
         if ' ' in read1[0] and ' ' in read2[0]:
-            if read1[0].split(' ')[1].startswith('1') and read2[0].split(' ')[1].startswith('2'): #std illumina, exit
+            if read1[0].split(' ')[1].startswith('1') and read2[0].split(' ')[1].startswith('2'):  # std illumina, exit
                 break
-        elif read1[0].endswith('/1') and read2[0].endswith('/2'): #also acceptable
+        elif read1[0].endswith('/1') and read2[0].endswith('/2'):  # also acceptable
             break
-        else: #it is not okay missing paired information
+        else:  # it is not okay missing paired information
             check = False
             break
     file1.close()
     file2.close()
-    if not check: #now need to fix these reads
+    if not check:  # now need to fix these reads
         log.info("PE reads do not conform to Trinity naming convention (need either /1 /2 or std illumina), fixing...")     
-        #work on forward reads first
+        # work on forward reads first
         if forward.endswith('.gz'):
             Funzip(forward, forward+'.bak', multiprocessing.cpu_count())
             SafeRemove(forward)
         else:
             os.rename(forward, forward+'.bak')
-        #now add ending to reads
+        # now add ending to reads
         with open(forward+'.fix', 'w') as forwardfix:
             for title, seq, qual in FastqGeneralIterator(open(forward+'.bak')):
                 title = title+'/1'
@@ -328,7 +331,7 @@ def CheckFASTQandFix(forward, reverse):
         Fzip(forward+'.fix', forward, multiprocessing.cpu_count())      
         SafeRemove(forward+'.bak')
         SafeRemove(forward+'.fix')           
-        #now work on reverse reads
+        # now work on reverse reads
         if reverse.endswith('.gz'):
             Funzip(reverse, reverse+'.bak', multiprocessing.cpu_count())
         else:            
@@ -337,12 +340,13 @@ def CheckFASTQandFix(forward, reverse):
             for title, seq, qual in FastqGeneralIterator(open(reverse+'.bak')):
                 title = title+'/2'
                 reversefix.write("@%s\n%s\n+\n%s\n" % (title, seq, qual))
-        #zip back up to original file
+        # zip back up to original file
         Fzip(reverse+'.fix', reverse, multiprocessing.cpu_count())
         SafeRemove(reverse+'.bak')
         SafeRemove(reverse+'.fix')
     return
-        
+
+
 def SafeRemove(input):
     if os.path.isdir(input):
         shutil.rmtree(input)
@@ -350,6 +354,7 @@ def SafeRemove(input):
         os.remove(input)
     else:
         return
+
 
 def runSubprocess(cmd, dir, logfile):
     logfile.debug(' '.join(cmd))
@@ -360,8 +365,9 @@ def runSubprocess(cmd, dir, logfile):
     if stderr:
         logfile.debug(stderr)
 
+
 def runSubprocess2(cmd, dir, logfile, output):
-    #function where output of cmd is STDOUT, capture STDERR in logfile
+    # function where output of cmd is STDOUT, capture STDERR in logfile
     logfile.debug(' '.join(cmd))
     with open(output, 'w') as out:
         proc = subprocess.Popen(cmd, cwd=dir, stdout=out, stderr=subprocess.PIPE)
@@ -2337,23 +2343,24 @@ def runtRNAscan(input, tmpdir, output):
                     else:
                         lenOut.write('%s' % line)
 
-    #now convert to GFF3        
+    # now convert to GFF3
     trna2gff = os.path.join(UTIL, 'trnascan2gff3.pl')
     with open(output, 'w') as out:
         subprocess.call(['perl', trna2gff, '--input', tRNAlenOut], stdout = out)
     log.info('Found {0:,}'.format(countGFFgenes(output)) +' tRNA gene models')
 
+
 def runtbl2asn(folder, template, discrepency, organism, isolate, strain, parameters, version):
     '''
     function to run NCBI tbl2asn
     '''
-    #get funannotate version
+    # get funannotate version
     fun_version = get_version()
-    #input should be a folder
+    # input should be a folder
     if not os.path.isdir(folder):
         log.error("tbl2asn error: %s is not a directory, exiting" % folder)
         sys.exit(1)
-    #based on organism, isolate, strain, construct meta info for -j flag
+    # based on organism, isolate, strain, construct meta info for -j flag
     if not organism:
         log.error("tbl2asn error: organism not specified")
         sys.exit(1)       
@@ -2365,12 +2372,13 @@ def runtbl2asn(folder, template, discrepency, organism, isolate, strain, paramet
         strain_meta = "[strain=" + strain + "]"
         meta = meta + " " + strain_meta
     cmd = ['tbl2asn', '-y', '"Annotated using '+fun_version+'"', '-N', str(version), '-p', folder, '-t', template, '-M', 'n', '-Z', discrepency, '-j', '"'+meta+'"', '-V', 'b', '-c', 'fx', '-T', '-a', 'r10u']
-    #check for custom parameters
+    # check for custom parameters
     if parameters:
         params = parameters.split(' ')
         cmd = cmd + params
     runSubprocess(cmd, '.', log)
     return ' '.join(cmd)
+
 
 def gb2smurf(input, prot_out, smurf_out):
     with open(smurf_out, 'w') as smurf:
@@ -3064,6 +3072,7 @@ def getGBKannotation(input, Database):
     membrane = {}
     buscos = {}
     secmet = {}
+    phibase = {}  # added by NW
     with open(input, 'rU') as infile:
         for record in SeqIO.parse(infile, 'genbank'):
             for f in record.features:
@@ -3147,7 +3156,14 @@ def getGBKannotation(input, Database):
                                         secmet[hit] = [ID]
                                     else:
                                         secmet[hit].append(ID)
-    return [pfams, iprs, nogs, buscos, merops, cazys, cogs, secreted, membrane, secmet, SMs] 
+                                elif i.startswith('PHI-Base:'):  # added by NW
+                                    hit = i.replace('PHI-Base:', '')
+                                    hit = hit.replace('#', ' ')
+                                    if not hit in phibase:
+                                        phibase[hit] = [ID]
+                                    else:
+                                        phibase[hit].append(ID)
+    return [pfams, iprs, nogs, buscos, merops, cazys, cogs, secreted, membrane, secmet, SMs, phibase]
                                     
 def annotationtable(input, Database, output):
     '''
@@ -3155,11 +3171,13 @@ def annotationtable(input, Database, output):
     trying to capture all annotation in a parsable tsv file or 
     something that could be imported into excel
     '''
-    #convert merops on the fly, need database
+    # convert merops on the fly, need database
     meropsDict = MEROPS2dict(os.path.join(Database, 'merops.formatted.fa'))
-    #input should be fully annotation GBK file from funannotate
+    # input should be fully annotation GBK file from funannotate
     with open(output, 'w') as outfile:
-        header = ['GeneID','Feature','Contig','Start','Stop','Strand','Name','Product','BUSCO','PFAM','InterPro','EggNog','COG','GO Terms','Secreted','Membrane','Protease','CAZyme', 'Notes', 'Translation']
+        header = ['GeneID', 'Feature', 'Contig', 'Start', 'Stop', 'Strand', 'Name', 'Product', 'BUSCO', 'PFAM',
+                  'InterPro', 'EggNog', 'COG', 'GO Terms', 'Secreted', 'Membrane', 'Protease', 'CAZyme', 'PHI',
+                  'Notes', 'Translation']  # added 'PHI'
         outfile.write('%s\n' % '\t'.join(header))
         for record in SeqIO.parse(input, 'genbank'):
             Contig = record.id
@@ -3174,7 +3192,7 @@ def annotationtable(input, Database, output):
                     elif strand == -1:
                         Strand = '-'
                     Product = f.qualifiers['product'][0]
-                    result = [ID,'tRNA',Contig,str(Start),str(End),Strand,'',Product,'','','','','','','','','','','','']
+                    result = [ID,'tRNA',Contig,str(Start),str(End),Strand,'',Product,'','','','','','','','','','','','','']  # added ,'' for PHI column
                     outfile.write('%s\n' % '\t'.join(result))
                 if f.type == 'CDS':
                     ID = f.qualifiers['locus_tag'][0]
@@ -3203,9 +3221,10 @@ def annotationtable(input, Database, output):
                     cazys = []
                     secreted = []
                     membrane = []
+                    phi = []  # added by NW
                     therest = []
                     buscos = []
-                    for k,v in f.qualifiers.items():
+                    for k, v in f.qualifiers.items():
                         if k == 'db_xref':
                             for i in v:
                                 if i.startswith('PFAM:'):
@@ -3248,10 +3267,17 @@ def annotationtable(input, Database, output):
                                 elif i.startswith('TransMembrane:'):
                                     hit = i.replace('TransMembrane:', '')
                                     membrane.append(hit)
+                                elif i.startswith('PHI-Base:'):
+                                    hit = i.replace('PHI-Base:', '')
+                                    hit = hit.replace('#', ' ')
+                                    phi.append(hit)  # added by NW
                                 else: #capture everything else
                                     hit = i
                                     therest.append(hit)
-                    result = [ID, 'CDS', Contig, str(Start), str(End), Strand, Name, Product, ';'.join(buscos), ';'.join(pfams), ';'.join(iprs), ';'.join(nogs), ';'.join(cogs), ';'.join(GOS), ';'.join(secreted), ';'.join(membrane), ';'.join(merops), ';'.join(cazys), ';'.join(therest), Translation]
+                    result = [ID, 'CDS', Contig, str(Start), str(End), Strand, Name, Product, ';'.join(buscos),
+                              ';'.join(pfams), ';'.join(iprs), ';'.join(nogs), ';'.join(cogs), ';'.join(GOS),
+                              ';'.join(secreted), ';'.join(membrane), ';'.join(merops), ';'.join(cazys), ';'.join(phi),
+                              ';'.join(therest), Translation]  # added PHI column results
                     outfile.write('%s\n' % '\t'.join(result))
 
 
@@ -3297,13 +3323,13 @@ def ncbiCheckErrors(error, validation, genename, fixOut):
 def convert2counts(input):
     import pandas as pd
     Counts = []
-    for i in range(0,len(input)):
+    for i in range(0, len(input)):
         dict = {}
-        for k,v in input[i].items():
+        for k, v in input[i].items():
             dict[k] = len(v)
         Counts.append(dict)
     df = pd.DataFrame(Counts)
-    df.fillna(0, inplace=True) #fill in zeros for missing data
+    df.fillna(0, inplace=True)  # fill in zeros for missing data
     return df
 
 def gb2proteinortho(input, folder, name):
@@ -3591,10 +3617,10 @@ def pfam2dict(file):
     return pfamDict
 
 def dictFlip(input):
-    #flip the list of dictionaries
+    # flip the list of dictionaries
     outDict = {}
     for x in input:  
-        for k,v in natsorted(x.iteritems()):
+        for k, v in natsorted(x.iteritems()):
             for i in v:
                 if i in outDict:
                     outDict[i].append(k)
@@ -3603,7 +3629,7 @@ def dictFlip(input):
     return outDict
 
 def busco_dictFlip(input):
-    #flip the list of dictionaries
+    # flip the list of dictionaries
     output = []
     for x in input:
         outDict = {}

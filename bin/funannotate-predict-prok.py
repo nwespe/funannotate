@@ -13,17 +13,14 @@ class MyFormatter(argparse.ArgumentDefaultsHelpFormatter):
     def __init__(self, prog):
         super(MyFormatter, self).__init__(prog, max_help_position=48)
 parser = argparse.ArgumentParser(prog='funannotate-predict.py', usage="%(prog)s [options] -i genome.fasta",
-    description = '''Script that does it all.''',
-    epilog = """Written by Jon Palmer (2016) nextgenusfs@gmail.com""",
+    description = '''Gene prediction for prokaryotic genomes.''',
+    epilog = """Modified from funannotate-predict.py written by Jon Palmer (2016) nextgenusfs@gmail.com""",
     formatter_class = MyFormatter)
 parser.add_argument('-i', '--input', help='Genome in FASTA format')
 parser.add_argument('-o', '--out', required=True, help='Basename of output files')
-parser.add_argument('-s', '--species', required=True, help='Species name (e.g. "Aspergillus fumigatus") use quotes if there is a space')
-parser.add_argument('--isolate', help='Isolate name (e.g. Af293)')
+parser.add_argument('-s', '--species', required=True, help='Species name (e.g. "Escherichia coli") use quotes if there is a space')
+parser.add_argument('--isolate', help='Isolate name (e.g. K12)')
 parser.add_argument('--strain', help='Strain name (e.g. CEA10)')
-parser.add_argument('--masked_genome', help='Soft-masked Genome in FASTA format ')
-parser.add_argument('--repeatmasker_gff3', help='RepeatMasker GFF3 file')
-parser.add_argument('--repeatmasker_species', help='RepeatMasker species, will skip repeatmodeler')
 parser.add_argument('--header_length', default=16, type=int, help='Max length for fasta headers')
 parser.add_argument('--name', default="FUN_", help='Shortname for genes, perhaps assigned by NCBI, eg. VC83')
 parser.add_argument('--numbering', default=1, help='Specify start of gene numbering')
@@ -38,7 +35,6 @@ parser.add_argument('--other_gff', help='GFF gene prediction pass-through to EVM
 parser.add_argument('--augustus_gff', help='Pre-computed Augustus gene models (GFF3)')
 parser.add_argument('--genemark_gtf', help='Pre-computed GeneMark gene models (GTF)')
 parser.add_argument('--maker_gff', help='MAKER2 GFF output')
-parser.add_argument('--repeatmodeler_lib', help='Pre-computed RepeatModeler (or other) repetitive elements')
 parser.add_argument('--rna_bam', help='BAM (sorted) of RNAseq aligned to reference for BRAKER1')
 parser.add_argument('--min_intronlen', default=10, help='Minimum intron length for gene models')
 parser.add_argument('--max_intronlen', default=3000, help='Maximum intron length for gene models')
@@ -46,20 +42,21 @@ parser.add_argument('--min_protlen', default=50, type=int, help='Minimum amino a
 parser.add_argument('--keep_no_stops', action='store_true', help='Keep gene models without valid stop codons')
 parser.add_argument('--ploidy', default=1, type=int, help='Ploidy of assembly')
 parser.add_argument('--cpus', default=2, type=int, help='Number of CPUs to use')
-parser.add_argument('--busco_seed_species', default='anidulans', help='Augustus species to use as initial training point for BUSCO')
+parser.add_argument('--busco_seed_species', default='E_coli_K12', help='Augustus species to use as initial training point for BUSCO')
 parser.add_argument('--optimize_augustus', action='store_true', help='Run "long" training of Augustus')
 parser.add_argument('--busco_db', default='dikarya', help='BUSCO model database')
-parser.add_argument('-t','--tbl2asn', default='-l paired-ends', help='Parameters for tbl2asn, linkage and gap info')
+parser.add_argument('-t', '--tbl2asn', default='-l paired-ends', help='Parameters for tbl2asn, linkage and gap info')
 parser.add_argument('--organism', default='fungus', choices=['fungus', 'other'], help='Fungal specific settings')
 parser.add_argument('--SeqCenter', default='CFMR', help='Sequencing center for GenBank tbl file')
 parser.add_argument('--SeqAccession', default='12345', help='Sequencing accession number')
-parser.add_argument('-d','--database', help='Path to funannotate database, $FUNANNOTATE_DB')
+parser.add_argument('-d', '--database', help='Path to funannotate database, $FUNANNOTATE_DB')
 parser.add_argument('--keep_evm', action='store_true', help='dont rerun EVM')
 parser.add_argument('--EVM_HOME', help='Path to Evidence Modeler home directory, $EVM_HOME')
 parser.add_argument('--AUGUSTUS_CONFIG_PATH', help='Path to Augustus config directory, $AUGUSTUS_CONFIG_PATH')
 parser.add_argument('--GENEMARK_PATH', help='Path to GeneMark exe (gmes_petap.pl) directory, $GENEMARK_PATH')
 parser.add_argument('--BAMTOOLS_PATH', help='Path to BamTools exe directory, $BAMTOOLS_PATH')
-args=parser.parse_args()
+args = parser.parse_args()
+
 
 def download(url, name):
     file_name = name
@@ -88,13 +85,14 @@ def download(url, name):
             raise
         pass
 
-#check for conflicting folder names to avoid problems
-conflict = ['busco', 'busco_proteins', 'RepeatMasker', 'RepeatModeler', 'genemark', 'EVM_tmp', 'braker']
+
+# check for conflicting folder names to avoid problems
+conflict = ['busco', 'busco_proteins', 'genemark', 'EVM_tmp', 'braker']
 if args.out in conflict:
     lib.log.error("%s output folder conflicts with a hard coded tmp folder, please change -o parameter" % args.out)
     sys.exit(1)
 
-#create folder structure
+# create folder structure
 if not os.path.isdir(args.out):
     os.makedirs(args.out)
     os.makedirs(os.path.join(args.out, 'predict_misc'))
@@ -104,23 +102,18 @@ else:
     if os.path.isdir(os.path.join(args.out, 'predict_results')):
         shutil.rmtree(os.path.join(args.out, 'predict_results'))
         os.makedirs(os.path.join(args.out, 'predict_results'))
-    #make sure subdirectories exist
+    # make sure subdirectories exist
     dirs = [os.path.join(args.out, 'predict_misc'), os.path.join(args.out, 'logfiles'), os.path.join(args.out, 'predict_results')]
     for d in dirs:
         if not os.path.isdir(d):
             os.makedirs(d)
     
-#create log file
-log_name = os.path.join(args.out, 'logfiles', 'funannotate-predict.log')
+# create log file
+log_name = os.path.join(args.out, 'logfiles', 'funannotate-predict-prok.log')
 if os.path.isfile(log_name):
     os.remove(log_name)
 
-#create debug log file for Repeats(capture stderr)
-debug = os.path.join(args.out, 'logfiles', 'funannotate-repeats.log')
-if os.path.isfile(debug):
-    os.remove(debug)
-
-#initialize script, log system info and cmd issue at runtime
+# initialize script, log system info and cmd issue at runtime
 lib.setupLogging(log_name)
 FNULL = open(os.devnull, 'w')
 cmd_args = " ".join(sys.argv)+'\n'
@@ -128,11 +121,11 @@ lib.log.debug(cmd_args)
 print("-------------------------------------------------------")
 lib.SystemInfo()
 
-#get version of funannotate
+# get version of funannotate
 version = lib.get_version()
 lib.log.info("Running %s" % version)
 
-#setup funannotate DB path
+# setup funannotate DB path
 if args.database:
     FUNDB = args.database
 else:
@@ -142,23 +135,25 @@ else:
         lib.log.error('Funannotate database not properly configured, run funannotate setup.')
         sys.exit(1)
         
-#check if database setup        
+# check if database setup
 blastdb = os.path.join(FUNDB,'repeats.dmnd')
 if not os.path.isfile(blastdb):
     lib.log.error("Can't find Repeat Database at {:}, you may need to re-run funannotate setup".format(os.path.join(FUNDB, 'repeats.dmnd')))
     sys.exit(1)
-#check buscos, download if necessary
+
+# check buscos, download if necessary
 if not os.path.isdir(os.path.join(FUNDB, args.busco_db)):
     lib.download_buscos(args.busco_db, FUNDB)
     
-#do some checks and balances
+# do some checks and balances
 if args.EVM_HOME:
     EVM = args.EVM_HOME
 else:
     try:
         EVM = os.environ["EVM_HOME"]
     except KeyError:
-        lib.log.error("$EVM_HOME environmental variable not found, Evidence Modeler is not properly configured.  You can use the --EVM_HOME argument to specifiy a path at runtime")
+        lib.log.error("$EVM_HOME environmental variable not found, Evidence Modeler is not properly configured. "
+                      "You can use the --EVM_HOME argument to specifiy a path at runtime")
         sys.exit(1)
 
 if args.AUGUSTUS_CONFIG_PATH:
@@ -167,10 +162,11 @@ else:
     try:
         AUGUSTUS = os.environ["AUGUSTUS_CONFIG_PATH"]
     except KeyError:
-        lib.log.error("$AUGUSTUS_CONFIG_PATH environmental variable not found, Augustus is not properly configured. You can use the --AUGUSTUS_CONFIG_PATH argument to specify a path at runtime.")
+        lib.log.error("$AUGUSTUS_CONFIG_PATH environmental variable not found, Augustus is not properly configured. "
+                      "You can use the --AUGUSTUS_CONFIG_PATH argument to specify a path at runtime.")
         sys.exit(1)
         
-#if you want to use BRAKER1, you also need some additional config paths
+# if you want to use BRAKER1, you also need some additional config paths
 if args.GENEMARK_PATH:
     GENEMARK_PATH = args.GENEMARK_PATH
 else:
@@ -178,7 +174,9 @@ else:
         GENEMARK_PATH = os.environ["GENEMARK_PATH"]
     except KeyError:
         if not lib.which('gmes_petap.pl'):
-            lib.log.error("GeneMark not found and $GENEMARK_PATH environmental variable missing, BRAKER1 is not properly configured. You can use the --GENEMARK_PATH argument to specify a path at runtime.")
+            lib.log.error("GeneMark not found and $GENEMARK_PATH environmental variable missing, "
+                          "BRAKER1 is not properly configured. "
+                          "You can use the --GENEMARK_PATH argument to specify a path at runtime.")
             sys.exit(1)
 
 if args.BAMTOOLS_PATH:
@@ -187,9 +185,11 @@ else:
     try:
         BAMTOOLS_PATH = os.environ["BAMTOOLS_PATH"]
     except KeyError:
-    #check if it is in PATH, if it is, no problem, else through warning
+    # check if it is in PATH, if it is, no problem, else through warning
         if not lib.which('bamtools'):
-            lib.log.error("Bamtools not found and $BAMTOOLS_PATH environmental variable missing, BRAKER1 is not properly configured. You can use the --BAMTOOLS_PATH argument to specify a path at runtime.")
+            lib.log.error("Bamtools not found and $BAMTOOLS_PATH environmental variable missing, "
+                          "BRAKER1 is not properly configured. "
+                          "You can use the --BAMTOOLS_PATH argument to specify a path at runtime.")
             sys.exit(1)
 
 if AUGUSTUS.endswith('config'):
@@ -199,10 +199,11 @@ elif AUGUSTUS.endswith('config'+os.sep):
 AutoAug = os.path.join(AUGUSTUS_BASE, 'scripts', 'autoAug.pl')
 GeneMark2GFF = os.path.join(parentdir, 'util', 'genemark_gtf2gff3.pl')
 
-programs = ['exonerate', 'diamond', 'tbl2asn', 'gmes_petap.pl', 'rmblastn', 'BuildDatabase', 'RepeatModeler', 'RepeatMasker', GeneMark2GFF, AutoAug, 'bedtools', 'gmap', 'gmap_build', 'blat', 'pslCDnaFilter', 'augustus', 'etraining', 'rmOutToGFF3.pl']
+programs = ['exonerate', 'diamond', 'tbl2asn', 'gmes_petap.pl', 'rmblastn', 'BuildDatabase', GeneMark2GFF, AutoAug,
+            'bedtools', 'gmap', 'gmap_build', 'blat', 'pslCDnaFilter', 'augustus', 'etraining', 'rmOutToGFF3.pl']
 lib.CheckDependencies(programs)
 
-#see if organism/species/isolate was passed at command line, build PASA naming scheme
+# see if organism/species/isolate was passed at command line, build PASA naming scheme
 organism = None
 if args.species:
     organism = args.species
@@ -216,7 +217,7 @@ else:
     organism_name = organism
 organism_name = organism_name.replace(' ', '_')
 
-#check augustus species now, so that you don't get through script and then find out it is already in DB
+# check augustus species now, so that you don't get through script and then find out it is already in DB
 if not args.augustus_species:
     aug_species = organism_name.lower()
 else:
@@ -224,53 +225,59 @@ else:
 augspeciescheck = lib.CheckAugustusSpecies(aug_species)
 if augspeciescheck and not args.augustus_gff:
     if not args.maker_gff:
-        lib.log.error("Augustus training set for %s already exists, using existing parameters.\n\t\tIf you want to re-train, provide a unique name for the --augustus_species argument" % (aug_species))
+        lib.log.error("Augustus training set for %s already exists, using existing parameters.\n\t\t"
+                      "If you want to re-train, provide a unique name for the --augustus_species argument" % (aug_species))
 
-#check augustus functionality
+# check augustus functionality
 augustuscheck = lib.checkAugustusFunc(AUGUSTUS_BASE)
 system_os = lib.systemOS()
 if args.rna_bam:
     if augustuscheck[1] == 0:
         lib.log.error("ERROR: %s is not installed properly for BRAKER1 (check bam2hints compilation)" % augustuscheck[0])
         sys.exit(1)
-    #note Braker v2 apparently has a new config file requirement, check for it, download it if it doesn't exist
+    # note Braker v2 apparently has a new config file requirement, check for it, download it if it doesn't exist
     braker_extrinsic = os.path.join(AUGUSTUS_BASE, 'config', 'extrinsic', 'extrinsic.M.RM.E.W.P.cfg')
-    if not os.path.isfile(braker_extrinsic): #download it
+    if not os.path.isfile(braker_extrinsic):  # download it
         lib.log.info("Augustus extrinsic file missing, will try to download and install")
         download('https://raw.githubusercontent.com/nextgenusfs/augustus/master/config/extrinsic/extrinsic.M.RM.E.W.P.cfg', braker_extrinsic)
               
-if not augspeciescheck: #means training needs to be done
+if not augspeciescheck:  # means training needs to be done
     if augustuscheck[2] == 0:
         if 'MacOSX' in system_os:
-            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you should try manual compilation with gcc-6 of v3.2.1." % (augustuscheck[0], system_os))
+            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, "
+                          "on %s you should try manual compilation with gcc-6 of v3.2.1." % (augustuscheck[0], system_os))
         elif 'Ubuntu' in system_os:
-            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you should install like this: `brew install augustus`." % (augustuscheck[0], system_os))
+            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, "
+                          "on %s you should install like this: `brew install augustus`." % (augustuscheck[0], system_os))
         elif 'centos' in system_os:
-            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you may need a much older version ~ v3.03." % (augustuscheck[0], system_os))
+            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, "
+                          "on %s you may need a much older version ~ v3.03." % (augustuscheck[0], system_os))
         else:
-            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, this is a problem with Augustus compliatation, you may need to compile manually on %s." % (augustuscheck[0], system_os))
-        if not args.pasa_gff: #first training will use pasa, otherwise BUSCO
+            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, "
+                          "this is a problem with Augustus compilation, you may need to compile manually on %s." % (augustuscheck[0], system_os))
+        if not args.pasa_gff: # first training will use pasa, otherwise BUSCO
             sys.exit(1)
         else:
             lib.log.info("Will proceed with PASA models to train Augustus")
             
-#if made it here output Augustus version
+# if made it here output Augustus version
 lib.log.info("%s detected, version seems to be compatible with BRAKER1 and BUSCO" % augustuscheck[0])
 
-#check input files to make sure they are not empty, first check if multiple files passed to transcript/protein evidence
-input_checks = [args.input, args.masked_genome, args.repeatmasker_gff3, args.genemark_mod, args.exonerate_proteins, args.gmap_gff, args.repeatmodeler_lib, args.pasa_gff, args.other_gff, args.rna_bam]
+# check input files to make sure they are not empty, first check if multiple files passed to transcript/protein evidence
+input_checks = [args.input, args.masked_genome, args.genemark_mod, args.exonerate_proteins, args.gmap_gff,
+                args.pasa_gff, args.other_gff, args.rna_bam]
 if not args.protein_evidence:
-    args.protein_evidence = [os.path.join(FUNDB, 'uniprot_sprot.fasta')]
+    args.protein_evidence = [os.path.join(FUNDB, 'uniprot_sprot.fasta')]  # TODO: think about modifying this part
 input_checks = input_checks + args.protein_evidence
-if args.transcript_evidence:  #if transcripts passed, otherwise ignore
+if args.transcript_evidence:  # if transcripts passed, otherwise ignore
     input_checks = input_checks + args.transcript_evidence
-#now check the inputs
+# now check the inputs
 for i in input_checks:
     if i:
         lib.checkinputs(i)
 
-#convert PASA GFF and/or GFF pass-through
-#convert PASA to have 'pasa_pred' in second column to make sure weights work with EVM
+# convert PASA GFF and/or GFF pass-through
+# convert PASA to have 'pasa_pred' in second column to make sure weights work with EVM
 PASA_GFF = os.path.join(args.out, 'predict_misc', 'pasa_predictions.gff3')
 PASA_weight = '10'
 if args.pasa_gff:
@@ -279,7 +286,7 @@ if args.pasa_gff:
         PASA_weight = pasacol[1]
         args.pasa_gff = pasacol[0]
     lib.renameGFF(os.path.abspath(args.pasa_gff), 'pasa_pred', PASA_GFF)
-    #validate it will work with EVM
+    # validate it will work with EVM
     if not lib.evmGFFvalidate(PASA_GFF, EVM, lib.log):
         lib.log.error("ERROR: %s is not a properly formatted PASA GFF file, please consult EvidenceModeler docs" % args.pasa_gff)
         sys.exit(1)
@@ -291,27 +298,25 @@ if args.other_gff:
         OTHER_weight = othercol[1]
         args.other_gff = othercol[0]
     lib.renameGFF(os.path.abspath(args.other_gff), 'other_pred', OTHER_GFF)
-    #validate it will work with EVM
+    # validate it will work with EVM
     if not lib.evmGFFvalidate(OTHER_GFF, EVM, lib.log):
         lib.log.error("ERROR: %s is not a properly formatted GFF file, please consult EvidenceModeler docs" % args.other_gff)
         sys.exit(1)
 
-#setup the genome fasta file, need either args.input or need to have args.masked_genome + args.repeatmasker_gff3
-#declare output location
+# setup the genome fasta file, need either args.input or need to have args.masked_genome + args.repeatmasker_gff3
+# declare output location
 genome_input = os.path.join(args.out, 'predict_misc', 'genome.fasta')
-MaskGenome = os.path.join(args.out, 'predict_misc', 'genome.softmasked.fa')
-RepeatMasker = os.path.join(args.out, 'predict_misc', 'repeatmasker.gff3')
 Scaffoldsort = os.path.join(args.out, 'predict_misc', 'scaffold.sort.order.txt')
 Renamingsort = os.path.join(args.out, 'predict_misc', 'scaffold.sort.rename.txt')
-#check inputs
+# check inputs
 if args.input:
-    #check fasta header length
+    # check fasta header length
     header_test = lib.checkFastaHeaders(args.input, args.header_length)
     if not header_test[0]:
         lib.log.error("Fasta headers on your input have more characters than the max (%i), reformat headers to continue." % args.header_length)
         lib.log.error("First 5 header names:\n%s" % '\n'.join(header_test[1][:5]))
         sys.exit(1)
-    else:
+    else:  # TODO: what the hell is this all for?
         with open(Scaffoldsort, 'w') as contigsout:
             sortedHeaders = natsorted(header_test[1])
             contigsout.write('%s' % '\n'.join(sortedHeaders))
@@ -323,29 +328,18 @@ if args.input:
                     line = line.replace('\n', '') 
                     renameout.write('%s\t%i\n' % (line, counter))
                     
-    #if BAM file passed, check if headers are same as input
+    # if BAM file passed, check if headers are same as input
     if args.rna_bam:
         if not lib.BamHeaderTest(args.input, args.rna_bam):
             lib.log.error("Fasta headers in BAM file do not match genome, exiting.")
             sys.exit(1)
-    #just copy the input fasta to the misc folder and move on.
+    # just copy the input fasta to the misc folder and move on.
     shutil.copyfile(args.input, genome_input)
     Genome = os.path.abspath(genome_input)
 else:
-    if not args.masked_genome or not args.repeatmasker_gff3:
-        lib.log.error("Input Error: either need -i,--input or need both --masked_genome and --repeatmasker_gff3")
-        sys.exit(1)
-    for x in [args.masked_genome, args.repeatmasker_gff3]:
-        lib.checkinputs(x)
-    # if BAM file passed, check if headers are same as input
-    if args.rna_bam:
-        if not lib.BamHeaderTest(args.masked_genome, args.rna_bam):
-            lib.log.error("Fasta headers in BAM file do not match genome, exiting.")
-            sys.exit(1)
-    # now copy over masked genome and repeatmasker
-    shutil.copyfile(args.masked_genome, genome_input)
-    shutil.copyfile(args.masked_genome, MaskGenome)
-    shutil.copyfile(args.repeatmasker_gff3, RepeatMasker)
+    lib.log.error("Input Error: need -i,--input")
+    sys.exit(1)
+
     
 # setup augustus parallel command
 AUGUSTUS_PARALLEL = os.path.join(parentdir, 'bin', 'augustus_parallel.py')
@@ -355,45 +349,23 @@ Converter = os.path.join(EVM, 'EvmUtils', 'misc', 'augustus_GFF3_to_EVM_GFF3.pl'
 ExoConverter = os.path.join(EVM, 'EvmUtils', 'misc', 'exonerate_gff_to_alignment_gff3.pl')
 Converter2 = os.path.join(EVM, 'EvmUtils', 'misc', 'augustus_GTF_to_EVM_GFF3.pl')
 EVM2proteins = os.path.join(EVM, 'EvmUtils', 'gff3_file_to_proteins.pl')
-    
-# repeatmasker, run if not passed from command line
-if not os.path.isfile(MaskGenome):
-    if not args.repeatmodeler_lib:
-        if not args.repeatmasker_species:
-            lib.RepeatModelMask(Genome, args.cpus, os.path.join(args.out, 'predict_misc'), MaskGenome, debug)
-        else:
-            lib.RepeatMaskSpecies(Genome, args.repeatmasker_species, args.cpus, os.path.join(args.out, 'predict_misc'), MaskGenome, debug)
-    else:
-        lib.RepeatMask(Genome, args.repeatmodeler_lib, args.cpus, os.path.join(args.out, 'predict_misc'), MaskGenome, debug)
-# make sure absolute path
-RepeatMasker = os.path.abspath(RepeatMasker)
-MaskGenome = os.path.abspath(MaskGenome)
+
 # final output for augustus hints, declare ahead of time for checking portion of script
 hintsE = os.path.join(args.out, 'predict_misc', 'hints.E.gff')
 hintsP = os.path.join(args.out, 'predict_misc', 'hints.P.gff')
 hints_all = os.path.join(args.out, 'predict_misc', 'hints.PE.gff')
 
-# check for masked genome here
-if not os.path.isfile(MaskGenome) or lib.getSize(MaskGenome) < 10:
-    lib.log.error("RepeatMasking failed, check log files.")
-    sys.exit(1)
-
-# load contig names and sizes into dictionary, get masked repeat stats
+# load contig names and sizes into dictionary
 ContigSizes = {}
 GenomeLength = 0
-maskedSize = 0
-with open(MaskGenome, 'rU') as input:
+with open(Genome, 'rU') as input:
     for rec in SeqIO.parse(input, 'fasta'):
         if not rec.id in ContigSizes:
             ContigSizes[rec.id] = len(rec.seq)
             GenomeLength += len(rec.seq)
-            maskedSize += lib.n_lower_chars(str(rec.seq))
         else:
             lib.log.error("Error, duplicate contig names, exiting")
             sys.exit(1)
-percentMask = maskedSize / float(GenomeLength)
-MaskedStats = '{0:.2f}%'.format(percentMask*100)
-lib.log.info('Masked genome: {0:,}'.format(len(ContigSizes))+' scaffolds; {0:,}'.format(GenomeLength)+ ' bp; '+MaskedStats+' repeats masked')
 
 # check longest 10 contigs
 longest10 = natsorted(ContigSizes.values(), reverse=True)[:10]
@@ -443,11 +415,11 @@ if args.maker_gff:
             if i == 'maker':
                 output.write("ABINITIO_PREDICTION\t%s\t1\n" % i)
             elif i == 'pasa_pred':
-                output.write("OTHER_PREDICTION\t%s\t%s\n" % (i, PASA_weight))  #set PASA to higher weight
+                output.write("OTHER_PREDICTION\t%s\t%s\n" % (i, PASA_weight))  # set PASA to higher weight
             elif i == 'other_pred':
-                output.write("OTHER_PREDICTION\t%s\t%s\n" % (i, OTHER_weight))  #set PASA to higher weight
+                output.write("OTHER_PREDICTION\t%s\t%s\n" % (i, OTHER_weight))  # set PASA to higher weight
             else:
-                output.write("OTHER_PREDICTION\t%s\t1\n" % i)  #set PASA to higher weight
+                output.write("OTHER_PREDICTION\t%s\t1\n" % i)  # set PASA to higher weight
         tr_sources = []
         with open(Transcripts, 'rU') as trns:
             for line in trns:
@@ -486,14 +458,14 @@ else:
         if os.path.isfile(trans_temp+'.old'):
             if not lib.sha256_check(trans_temp, trans_temp+'.old'): #they are not the same, re-run GMAP
                 lib.log.info("Aligning transcript evidence to genome with GMAP")
-                lib.runGMAP(trans_temp, MaskGenome, args.cpus, args.max_intronlen, os.path.join(args.out, 'predict_misc'), trans_out)
+                lib.runGMAP(trans_temp, Genome, args.cpus, args.max_intronlen, os.path.join(args.out, 'predict_misc'), trans_out)
             else:
                 os.remove(trans_temp+'.old')
                 lib.log.info("Using existing transcript evidence alignments")
         # run Gmap of transcripts to genome
         if not os.path.isfile(trans_out):
             lib.log.info("Aligning transcript evidence to genome with GMAP")
-            lib.runGMAP(trans_temp, MaskGenome, args.cpus, args.max_intronlen, os.path.join(args.out, 'predict_misc'), trans_out)
+            lib.runGMAP(trans_temp, Genome, args.cpus, args.max_intronlen, os.path.join(args.out, 'predict_misc'), trans_out)
         Transcripts = os.path.abspath(trans_out)
     else:
         Transcripts = False
@@ -503,11 +475,11 @@ else:
     if Transcripts:
         total = lib.countGMAPtranscripts(Transcripts)
         lib.log.info('{0:,}'.format(total) + ' transcripts aligned with GMAP')
-    if not os.path.isfile(hintsE): # use previous hints file if exists
-        if os.path.isfile(trans_temp): # if transcripts are available to algin, run BLAT
+    if not os.path.isfile(hintsE):  # use previous hints file if exists
+        if os.path.isfile(trans_temp):  # if transcripts are available to align, run BLAT
             # now run BLAT for Augustus hints
             lib.log.info("Aligning transcript evidence to genome with BLAT")
-            cmd = ['blat', '-noHead', '-minIdentity=80', maxINT, MaskGenome, trans_temp, blat_out]
+            cmd = ['blat', '-noHead', '-minIdentity=80', maxINT, Genome, trans_temp, blat_out]
             lib.runSubprocess(cmd, '.', lib.log)
             cmd = ['pslCDnaFilter', '-minId=0.9', '-localNearBest=0.005', '-ignoreNs', '-bestOverlap', blat_out, blat_filt]
             lib.runSubprocess(cmd, '.', lib.log)
@@ -525,29 +497,32 @@ else:
             lib.log.error("No transcripts available to generate BLAT Augustus hints, provide --transcript_evidence")
             
     # check for protein evidence/format as needed
-    p2g_out = os.path.join(args.out, 'predict_misc', 'exonerate.out')
+    p2d_out = os.path.join(args.out, 'predict_misc', 'exonerate.out')
     prot_temp = os.path.join(args.out, 'predict_misc', 'proteins.combined.fa')
-    P2G = os.path.join(parentdir, 'bin', 'funannotate-p2g.py')
+    P2D = os.path.join(parentdir, 'bin', 'funannotate-p2d.py')
     if not args.exonerate_proteins:
         if args.protein_evidence:
             if os.path.isfile(prot_temp):
                 shutil.copyfile(prot_temp, prot_temp+'.old')     
             # clean up headers, etc
             lib.cleanProteins(args.protein_evidence, prot_temp)
-            # run funannotate-p2g to map to genome
-            p2g_cmd = [sys.executable, P2G, '-p', prot_temp, '-g', MaskGenome, '-o', p2g_out, '--maxintron', str(args.max_intronlen), '--cpus', str(args.cpus), '--ploidy', str(args.ploidy), '-f', 'diamond', '--tblastn_out', os.path.join(args.out, 'predict_misc', 'p2g.diamond.out'), '--logfile', os.path.join(args.out, 'logfiles', 'funannotate-p2g.log')]
+            # run funannotate-p2d to map to dna (no intron modeling)
+            p2d_cmd = [sys.executable, P2D, '-p', prot_temp, '-g', Genome, '-o', p2g_out,
+                       '--cpus', str(args.cpus), '--ploidy', str(args.ploidy),
+                       '-f', 'diamond', '--tblastn_out', os.path.join(args.out, 'predict_misc', 'p2d.diamond.out'),
+                       '--logfile', os.path.join(args.out, 'logfiles', 'funannotate-p2d.log')]
             # check if protein evidence is same as old evidence
-            if not os.path.isfile(p2g_out):
+            if not os.path.isfile(p2d_out):
                 lib.log.info("Mapping proteins to genome using Diamond blastx/Exonerate")
-                subprocess.call(p2g_cmd)
+                subprocess.call(p2d_cmd)
             else:
                 lib.log.info("Using existing Exonerate alignments")
-            exonerate_out = os.path.abspath(p2g_out)
+            exonerate_out = os.path.abspath(p2d_out)
         else:
             exonerate_out = False
     else:
-        shutil.copyfile(args.exonerate_proteins, p2g_out)
-        exonerate_out = os.path.abspath(p2g_out)
+        shutil.copyfile(args.exonerate_proteins, p2d_out)
+        exonerate_out = os.path.abspath(p2d_out)
 
     if exonerate_out:
         Exonerate = os.path.join(args.out, 'predict_misc', 'protein_alignments.gff3')
@@ -560,10 +535,10 @@ else:
         Exonerate = os.path.abspath(Exonerate)
         # now run exonerate2 hints for Augustus
         exonerate2hints = os.path.join(AUGUSTUS_BASE, 'scripts', 'exonerate2hints.pl')
-        e2h_in = '--in='+p2g_out
+        e2h_in = '--in='+p2d_out
         e2h_out = '--out='+hintsP
-        e2h_minINT = '--minintronlen='+str(args.min_intronlen)
-        e2h_maxINT = '--maxintronlen='+str(args.max_intronlen)
+        e2h_minINT = '--minintronlen='+str(10)  # hard-coded the funannotate defaults, not used if no introns
+        e2h_maxINT = '--maxintronlen='+str(3000)
         cmd = [exonerate2hints, e2h_in, e2h_out, e2h_minINT, e2h_maxINT]
         lib.runSubprocess(cmd, '.', lib.log)
 
@@ -609,7 +584,7 @@ else:
         braker_log = os.path.join(args.out, 'logfiles', 'braker.log')
         lib.log.info("Now launching BRAKER to train GeneMark and Augustus")
         species = '--species=' + aug_species
-        genome = '--genome=' + MaskGenome
+        genome = '--genome=' + Genome
         bam = '--bam=' + os.path.abspath(args.rna_bam)
         Option1 = '--AUGUSTUS_CONFIG_PATH=' + AUGUSTUS
         Option2 = '--BAMTOOLS_PATH=' + BAMTOOLS_PATH
@@ -654,20 +629,20 @@ else:
             lib.log.info("Training Augustus using PASA data, this may take awhile")
             GFF2GB = os.path.join(AUGUSTUS_BASE, 'scripts', 'gff2gbSmallDNA.pl')
             trainingset = os.path.join(args.out, 'predict_misc', 'augustus.pasa.gb')
-            cmd = [GFF2GB, PASA_GFF, MaskGenome, '500', trainingset]
+            cmd = [GFF2GB, PASA_GFF, Genome, '500', trainingset]
             lib.runSubprocess(cmd, '.', lib.log)
             if args.optimize_augustus:
-                lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, MaskGenome, args.out, args.cpus, True)   
+                lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, Genome, args.out, args.cpus, True)
             else:
-                lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, MaskGenome, args.out, args.cpus, False)
+                lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, Genome, args.out, args.cpus, False)
                 
         # now run whole genome Augustus using trained parameters.
         lib.log.info("Running Augustus gene prediction")
         if not os.path.isfile(aug_out):     
             if os.path.isfile(hints_all):
-                cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '--hints', hints_all, '-i', MaskGenome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
+                cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '--hints', hints_all, '-i', Genome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
             else:
-                cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '-i', MaskGenome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
+                cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '-i', Genome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
             subprocess.call(cmd)
         # convert for EVM
         Augustus = os.path.join(args.out, 'predict_misc', 'augustus.evm.gff3')
@@ -677,7 +652,7 @@ else:
     if not GeneMark:
         GeneMarkGFF3 = os.path.join(args.out, 'predict_misc', 'genemark.gff')
         # count contigs
-        num_contigs = lib.countfasta(MaskGenome)
+        num_contigs = lib.countfasta(Genome)
         if longest10[0] < 50000:
             lib.log.error("GeneMark-ES may fail because this assembly appears to be highly fragmented:\n\
 -------------------------------------------------------\n\
@@ -692,9 +667,9 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
             else:
                 if not os.path.isfile(GeneMarkGFF3):
                     if args.organism == 'fungus':
-                        lib.RunGeneMarkES(MaskGenome, args.cpus, os.path.join(args.out, 'predict_misc'), GeneMarkGFF3, True)
+                        lib.RunGeneMarkES(Genome, args.cpus, os.path.join(args.out, 'predict_misc'), GeneMarkGFF3, True)
                     else:
-                        lib.RunGeneMarkES(MaskGenome, args.cpus, os.path.join(args.out, 'predict_misc'), GeneMarkGFF3, False)
+                        lib.RunGeneMarkES(Genome, args.cpus, os.path.join(args.out, 'predict_misc'), GeneMarkGFF3, False)
                 GeneMarkTemp = os.path.join(args.out, 'predict_misc', 'genemark.temp.gff')
                 cmd = ['perl', Converter, GeneMarkGFF3]
                 lib.runSubprocess2(cmd, '.', lib.log, GeneMarkTemp)
@@ -705,7 +680,7 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
                         output.write(lines)
         else:   # have training parameters file, so just run genemark with
             if num_contigs < 2: # now can run modified prediction on single contig
-                with open(MaskGenome, 'rU') as genome:
+                with open(Genome, 'rU') as genome:
                     for line in genome:
                         if line.startswith('>'):
                             header = line.replace('>', '')
@@ -714,7 +689,7 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
                 GeneMarkTemp = os.path.join(args.out, 'predict_misc', 'genemark.temp.gff')
                 if not os.path.isfile(GeneMarkGFF3):
                     lib.log.info("Running GeneMark on single-contig assembly")
-                    cmd = ['gmhmme3', '-m', args.genemark_mod, '-o', GeneMarkGFF3, '-f', 'gff3', MaskGenome]
+                    cmd = ['gmhmme3', '-m', args.genemark_mod, '-o', GeneMarkGFF3, '-f', 'gff3', Genome]
                     lib.runSubprocess(cmd, '.', lib.log)
                 # now open output and reformat
                 lib.log.info("Converting GeneMark GTF file to GFF3")
@@ -736,9 +711,9 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
             else:
                 if not os.path.isfile(GeneMarkGFF3):
                     if args.organism == 'fungus':
-                        lib.RunGeneMark(MaskGenome, args.genemark_mod, args.cpus, os.path.join(args.out, 'predict_misc'), GeneMarkGFF3, True)
+                        lib.RunGeneMark(Genome, args.genemark_mod, args.cpus, os.path.join(args.out, 'predict_misc'), GeneMarkGFF3, True)
                     else:
-                        lib.RunGeneMark(MaskGenome, args.genemark_mod, args.cpus, os.path.join(args.out, 'predict_misc'), GeneMarkGFF3, False)                  
+                        lib.RunGeneMark(Genome, args.genemark_mod, args.cpus, os.path.join(args.out, 'predict_misc'), GeneMarkGFF3, False)
                 GeneMarkTemp = os.path.join(args.out, 'predict_misc', 'genemark.temp.gff')
                 cmd = ['perl', Converter, GeneMarkGFF3]
                 lib.runSubprocess2(cmd, '.', lib.log, GeneMarkTemp) 
@@ -793,7 +768,7 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
                 else:
                     busco_seed = 'generic'
                 with open(busco_log, 'w') as logfile:
-                    subprocess.call([sys.executable, BUSCO, '-i', MaskGenome, '-m', 'genome', '--lineage', BUSCO_FUNGI, '-o', aug_species, '-c', str(args.cpus), '--species', busco_seed, '-f'], cwd = 'busco', stdout = logfile, stderr = logfile)
+                    subprocess.call([sys.executable, BUSCO, '-i', Genome, '-m', 'genome', '--lineage', BUSCO_FUNGI, '-o', aug_species, '-c', str(args.cpus), '--species', busco_seed, '-f'], cwd = 'busco', stdout = logfile, stderr = logfile)
                 # check if BUSCO found models for training, if not error out and exit.
                 busco_training = os.path.join('busco', 'run_'+aug_species, 'augustus_output', 'training_set_'+aug_species+'.txt')
                 if not lib.checkannotations(busco_training):
@@ -863,13 +838,13 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
             Busco_Predictions = os.path.abspath(busco_predictions)
             # parse entire EVM command to script, must be absolute paths for everything
             if Exonerate and Transcripts:
-                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM_busco.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Busco_Predictions, '--protein_alignments', os.path.abspath(busco_proteins), '--transcript_alignments', os.path.abspath(busco_transcripts), '--weights', Busco_Weights, '--min_intron_length', str(args.min_intronlen), EVM_busco]
+                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM_busco.log'), str(args.cpus), '--genome', Genome, '--gene_predictions', Busco_Predictions, '--protein_alignments', os.path.abspath(busco_proteins), '--transcript_alignments', os.path.abspath(busco_transcripts), '--weights', Busco_Weights, '--min_intron_length', str(args.min_intronlen), EVM_busco]
             elif not Exonerate and Transcripts:
-                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM_busco.log'),str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Busco_Predictions, '--transcript_alignments', os.path.abspath(busco_transcripts), '--weights', Busco_Weights, '--min_intron_length', str(args.min_intronlen), EVM_busco]
+                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM_busco.log'),str(args.cpus), '--genome', Genome, '--gene_predictions', Busco_Predictions, '--transcript_alignments', os.path.abspath(busco_transcripts), '--weights', Busco_Weights, '--min_intron_length', str(args.min_intronlen), EVM_busco]
             elif not Transcripts and Exonerate:
-                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM_busco.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Busco_Predictions, '--protein_alignments', os.path.abspath(busco_proteins), '--weights', Busco_Weights, '--min_intron_length', str(args.min_intronlen), EVM_busco]
+                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM_busco.log'), str(args.cpus), '--genome', Genome, '--gene_predictions', Busco_Predictions, '--protein_alignments', os.path.abspath(busco_proteins), '--weights', Busco_Weights, '--min_intron_length', str(args.min_intronlen), EVM_busco]
             elif not any([Transcripts,Exonerate]):
-                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM_busco.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Busco_Predictions, '--weights', Busco_Weights, '--min_intron_length', str(args.min_intronlen), EVM_busco]
+                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM_busco.log'), str(args.cpus), '--genome', Genome, '--gene_predictions', Busco_Predictions, '--weights', Busco_Weights, '--min_intron_length', str(args.min_intronlen), EVM_busco]
             # run EVM
             if not os.path.isfile(EVM_busco):
                 subprocess.call(evm_cmd)
@@ -894,7 +869,7 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
             lib.log.info("Checking BUSCO protein models for accuracy")
             evm_proteins = os.path.join(args.out, 'predict_misc', 'busco.evm.proteins.fa')
             busco_final = os.path.join(args.out, 'predict_misc', 'busco.final.gff3')
-            cmd = [EVM2proteins, EVM_busco, MaskGenome]
+            cmd = [EVM2proteins, EVM_busco, Genome]
             lib.runSubprocess2(cmd, '.', lib.log, evm_proteins)
             if not os.path.isdir(os.path.join(args.out, 'predict_misc', 'busco_proteins')):
                 os.makedirs(os.path.join(args.out, 'predict_misc', 'busco_proteins'))
@@ -907,20 +882,20 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
             ### Run Augustus training
             GFF2GB = os.path.join(AUGUSTUS_BASE, 'scripts', 'gff2gbSmallDNA.pl')
             trainingset = os.path.join(args.out, 'predict_misc', 'busco.training.gb')
-            cmd = [GFF2GB, busco_final, MaskGenome, '500', trainingset]
+            cmd = [GFF2GB, busco_final, Genome, '500', trainingset]
             lib.runSubprocess(cmd, '.', lib.log)
             if args.optimize_augustus:
-                lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, MaskGenome, args.out, args.cpus, True)
+                lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, Genome, args.out, args.cpus, True)
             else:
-                lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, MaskGenome, args.out, args.cpus, False)
+                lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, Genome, args.out, args.cpus, False)
 
         lib.log.info("Running Augustus gene prediction")
         # now run Augustus multithreaded...
         if not os.path.isfile(aug_out):
             if os.path.isfile(hints_all):
-                cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '--hints', hints_all, '-i', MaskGenome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
+                cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '--hints', hints_all, '-i', Genome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
             else:
-                cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '-i', MaskGenome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
+                cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '-i', Genome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
             subprocess.call(cmd)
         Augustus = os.path.join(args.out, 'predict_misc', 'augustus.evm.gff3')
         cmd = ['perl', Converter, aug_out]
@@ -1058,15 +1033,15 @@ else:
     if Exonerate and Transcripts:
         Transcripts = os.path.abspath(Transcripts)
         Exonerate = os.path.abspath(Exonerate)
-        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--protein_alignments', Exonerate, '--transcript_alignments', Transcripts, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', Genome, '--gene_predictions', Predictions, '--protein_alignments', Exonerate, '--transcript_alignments', Transcripts, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
     elif not Exonerate and Transcripts:
         Transcripts = os.path.abspath(Transcripts)
-        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'),str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--transcript_alignments', Transcripts, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'),str(args.cpus), '--genome', Genome, '--gene_predictions', Predictions, '--transcript_alignments', Transcripts, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
     elif not Transcripts and Exonerate:
         Exonerate = os.path.abspath(Exonerate)
-        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--protein_alignments', Exonerate, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', Genome, '--gene_predictions', Predictions, '--protein_alignments', Exonerate, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
     elif not any([Transcripts,Exonerate]):
-        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', Genome, '--gene_predictions', Predictions, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
 
     #run EVM
     if not os.path.isfile(EVM_out):
@@ -1093,7 +1068,7 @@ else:
 #get protein fasta files
 evmCount = lib.countGFFgenes(EVM_out)
 lib.log.info("Generating protein fasta files from {:,} EVM models".format(evmCount))
-cmd = [os.path.join(EVM, 'EvmUtils', 'gff3_file_to_proteins.pl'), EVM_out, MaskGenome]
+cmd = [os.path.join(EVM, 'EvmUtils', 'gff3_file_to_proteins.pl'), EVM_out, Genome]
 EVM_proteins = os.path.join(args.out, 'predict_misc', 'evm.round1.proteins.fa')
 with open(EVM_proteins, 'w') as evmprots:
     lib.log.debug(' '.join(cmd))
@@ -1121,7 +1096,7 @@ lib.log.info('{0:,}'.format(total) + ' gene models remaining')
 lib.log.info("Predicting tRNAs")
 tRNAscan = os.path.join(args.out, 'predict_misc', 'trnascan.gff3')
 if not os.path.isfile(tRNAscan):
-    lib.runtRNAscan(MaskGenome, os.path.join(args.out,'predict_misc'), tRNAscan)
+    lib.runtRNAscan(Genome, os.path.join(args.out,'predict_misc'), tRNAscan)
 
 #combine tRNAscan with EVM gff, dropping tRNA models if they overlap with EVM models
 cleanTRNA = os.path.join(args.out, 'predict_misc', 'trnascan.no-overlaps.gff3')
@@ -1137,7 +1112,7 @@ if not os.path.isdir(gag3dir):
     os.makedirs(gag3dir)
 tbl_file = os.path.join(gag3dir, 'genome.tbl')
 lib.GFF2tbl(EVMCleanGFF, cleanTRNA, EVM_proteins, ContigSizes, prefix, args.numbering, args.SeqCenter, args.SeqAccession, tbl_file)
-shutil.copyfile(MaskGenome, os.path.join(gag3dir, 'genome.fsa'))
+shutil.copyfile(Genome, os.path.join(gag3dir, 'genome.fsa'))
 
 #setup final output files
 final_fasta = os.path.join(args.out, 'predict_results', organism_name + '.scaffolds.fa')

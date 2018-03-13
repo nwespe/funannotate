@@ -8,7 +8,7 @@ from Bio import SeqIO
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
     from Bio import SearchIO
-#import funannotate library
+# import funannotate library
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 parentdir = os.path.dirname(currentdir)
 sys.path.insert(0,parentdir)
@@ -16,23 +16,27 @@ import lib.library as lib
 
 IPR2ANNOTATE = os.path.join(parentdir, 'util', 'iprscan2annotations.py')
 
-#setup menu with argparse
+
+# setup menu with argparse
 class MyFormatter(argparse.ArgumentDefaultsHelpFormatter):
     def __init__(self,prog):
         super(MyFormatter,self).__init__(prog,max_help_position=48)
-parser=argparse.ArgumentParser(prog='funannotate-functional.py', usage="%(prog)s [options] -i folder --eggnog emapper.annotations --iprscan proteins.xml --cpus 12",
+
+
+parser=argparse.ArgumentParser(prog='funannotate-functional.py',
+    usage="%(prog)s [options] -i folder --eggnog emapper.annotations --iprscan proteins.xml --cpus 12",
     description='''Script that adds functional annotation to a genome.''',
     epilog="""Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com""",
-    formatter_class = MyFormatter)
-parser.add_argument('-i','--input', help='Folder from funannotate predict.')
+    formatter_class=MyFormatter)
+parser.add_argument('-i', '--input', help='Folder from funannotate predict.')
 parser.add_argument('--genbank', help='Annotated genome in GenBank format')
 parser.add_argument('--fasta', help='Genome in FASTA format')
 parser.add_argument('--gff', help='GFF3 annotation file')
-parser.add_argument('-o','--out', help='Basename of output files')
+parser.add_argument('-o', '--out', help='Basename of output files')
 parser.add_argument('--sbt', default='SBT', help='Basename of output files')
-parser.add_argument('-s','--species', help='Species name (e.g. "Aspergillus fumigatus") use quotes if there is a space')
-parser.add_argument('-t','--tbl2asn', help='Custom parameters for tbl2asn, example: linkage and gap info')
-parser.add_argument('-a','--annotations', help='Custom annotations, tsv 3 column file')
+parser.add_argument('-s', '--species', help='Species name (e.g. "Aspergillus fumigatus") use quotes if there is a space')
+parser.add_argument('-t', '--tbl2asn', help='Custom parameters for tbl2asn, example: linkage and gap info')
+parser.add_argument('-a', '--annotations', help='Custom annotations, tsv 3 column file')
 parser.add_argument('--isolate', help='Isolate name (e.g. Af293)')
 parser.add_argument('--strain', help='Strain name (e.g. CEA10)')
 parser.add_argument('--cpus', default=2, type=int, help='Number of CPUs to use')
@@ -44,13 +48,14 @@ parser.add_argument('--phobius', help='Phobius results')
 parser.add_argument('--eggnog', help='EggNog Mapper annotations')
 parser.add_argument('--busco_db', default='dikarya', help='BUSCO model database')
 parser.add_argument('--p2g', help='NCBI p2g file from previous annotation')
-parser.add_argument('-d','--database', help='Path to funannotate database, $FUNANNOTATE_DB')
+parser.add_argument('-d', '--database', help='Path to funannotate database, $FUNANNOTATE_DB')
 parser.add_argument('--fix', help='TSV ID GeneName Product file to over-ride automated process')
 parser.add_argument('--remove', help='TSV ID GeneName Product file to remove from annotation')
 parser.add_argument('--rename', help='Rename locus tag')
 args=parser.parse_args()
 
-#functions
+
+# functions
 def PfamHmmer(input):
     HMM = os.path.join(FUNDB, 'Pfam-A.hmm')
     base = os.path.basename(input).split('.fa')[0]
@@ -58,14 +63,16 @@ def PfamHmmer(input):
     cmd = ['hmmsearch', '--domtblout', pfam_out, '--cpu', '1', '-E', '1e-50', HMM, input]
     lib.runSubprocess3(cmd, '.', lib.log)
 
+
 def safe_run(*args, **kwargs):
     """Call run(), catch exceptions."""
     try: PfamHmmer(*args, **kwargs)
     except Exception as e:
         print("error: %s run(*%r, **%r)" % (e, args, kwargs))
-        
+
+
 def combineHmmerOutputs(inputList, output):
-    #function to combine multiple HMMER runs with proper header/footer so biopython can read
+    # function to combine multiple HMMER runs with proper header/footer so biopython can read
     allHeadFoot = []
     with open(inputList[0], 'rU') as infile:
         for line in infile:
@@ -82,19 +89,20 @@ def combineHmmerOutputs(inputList, output):
                     out.write(line)
         for y in allHeadFoot[3:]:
             out.write(y)
- 
+
+
 def multiPFAMsearch(inputList, cpus, evalue, tmpdir, output):
-    #run hmmerscan multithreaded by running at same time
-    #input is a list of files, run multiprocessing on them
+    # run hmmerscan multithreaded by running at same time
+    # input is a list of files, run multiprocessing on them
     pfam_results = os.path.join(os.path.dirname(tmpdir), 'pfam.txt')
     pfam_filtered = os.path.join(os.path.dirname(tmpdir), 'pfam.filtered.txt')
     lib.runMultiNoProgress(safe_run, inputList, cpus)
     
-    #now grab results and combine, kind of tricky as there are header and footers for each
+    # now grab results and combine, kind of tricky as there are header and footers for each
     resultList = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if os.path.isfile(os.path.join(tmpdir, f)) and f.endswith('.pfam.txt')]
     combineHmmerOutputs(resultList, pfam_results)
 
-    #now parse results
+    # now parse results
     with open(output, 'w') as out:
         with open(pfam_filtered, 'w') as filtered:
             with open(pfam_results, 'rU') as results:
@@ -120,6 +128,7 @@ def multiPFAMsearch(inputList, cpus, evalue, tmpdir, output):
                             filtered.write("%s\t%s\t%s\t%f\n" % (query, pfam, hit_evalue, coverage))
                             out.write("%s\tdb_xref\tPFAM:%s\n" % (query, pfam))
 
+
 def dbCANHmmer(input):
     HMM = os.path.join(FUNDB, 'dbCAN.hmm')
     base = os.path.basename(input).split('.fa')[0]
@@ -127,26 +136,28 @@ def dbCANHmmer(input):
     cmd = ['hmmscan', '--domtblout', outfiles, '--cpu', '1', '-E', '1e-17', HMM, input]
     lib.runSubprocess3(cmd, '.', lib.log)
 
+
 def safe_run2(*args, **kwargs):
     """Call run(), catch exceptions."""
     try: dbCANHmmer(*args, **kwargs)
     except Exception as e:
         print("error: %s run(*%r, **%r)" % (e, args, kwargs))
 
+
 def dbCANsearch(inputList, cpus, evalue, tmpdir, output):
     CAZY = {'CBM': 'Carbohydrate-binding module', 'CE': 'Carbohydrate esterase','GH': 'Glycoside hydrolase', 'GT': 'Glycosyltransferase', 'PL': 'Polysaccharide lyase', 'AA': 'Auxillary activities'}
-    #run hmmerscan
+    # run hmmerscan
     dbCAN_out = os.path.join(tmpdir, 'dbCAN.txt')
     dbCAN_filtered = os.path.join(tmpdir, 'dbCAN.filtered.txt')
     lib.runMultiNoProgress(safe_run2, inputList, cpus)
     #cmd = ['hmmscan', '--domtblout', dbCAN_out, '--cpu', str(cpus), '-E', str(evalue), HMM, input]
     #lib.runSubprocess3(cmd, '.', lib.log)
     
-    #now grab results
+    # now grab results
     resultList = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if os.path.isfile(os.path.join(tmpdir, f)) and f.endswith('.dbcan.txt')]
     combineHmmerOutputs(resultList, dbCAN_out)
     
-    #now parse results
+    # now parse results
     with open(output, 'w') as out:
         with open(dbCAN_filtered, 'w') as filtered:
             filtered.write("#HMM_family\tHMM_len\tQuery_ID\tQuery_len\tE-value\tHMM_start\tHMM_end\tQuery_start\tQuery_end\tCoverage\n")
@@ -175,8 +186,9 @@ def dbCANsearch(inputList, cpus, evalue, tmpdir, output):
                                 query = query + '-T1'
                             out.write("%s\tnote\tCAZy:%s\n" % (query, hit))
 
+
 def MEROPSBlast(input, cpus, evalue, tmpdir, output, diamond=True):
-    #run blastp against merops
+    # run blastp against merops
     blast_tmp = os.path.join(tmpdir, 'merops.xml')
     if diamond:
         blastdb = os.path.join(FUNDB,'merops.dmnd')
@@ -186,7 +198,7 @@ def MEROPSBlast(input, cpus, evalue, tmpdir, output, diamond=True):
         cmd = ['blastp', '-db', blastdb, '-outfmt', '5', '-out', blast_tmp, '-num_threads', str(cpus), '-max_target_seqs', '1', '-evalue', str(evalue), '-query', input]
     if not os.path.isfile(blast_tmp):
         lib.runSubprocess(cmd, '.', lib.log)
-    #parse results
+    # parse results
     with open(output, 'w') as out:
         with open(blast_tmp, 'rU') as results:
             for qresult in SearchIO.parse(results, "blast-xml"):
@@ -199,13 +211,41 @@ def MEROPSBlast(input, cpus, evalue, tmpdir, output, diamond=True):
                         continue
                     sseqid = hits[0].id
                     family = hits[0].description
-                    #okay, print out annotations for GAG
+                    # okay, print out annotations for GAG
                     if not ID.endswith('-T1'):
                         ID = ID + '-T1'
                     out.write("%s\tnote\tMEROPS:%s\n" % (ID,sseqid))
 
+
+def PHIBlast(input, cpus, evalue, tmpdir, output):
+    # written by Nichole Wespe, modeled on MEROPSBlast function
+    # run blastp against phi-base
+    blast_tmp = os.path.join(tmpdir, 'phi-base.xml')
+    blastdb = os.path.join(FUNDB,'phi-base.dmnd')
+    cmd = ['diamond', 'blastp', '--sensitive', '--query', input, '--threads', str(cpus), '--out', blast_tmp, '--db', blastdb, '--evalue', str(evalue), '--max-target-seqs', '1', '--outfmt', '5']
+    if not os.path.isfile(blast_tmp):
+        lib.runSubprocess(cmd, '.', lib.log)
+    # parse results
+    with open(output, 'w') as out:
+        with open(blast_tmp, 'rU') as results:
+            for qresult in SearchIO.parse(results, "blast-xml"):
+                hits = qresult.hits
+                qlen = qresult.seq_len
+                ID = qresult.id
+                num_hits = len(hits)
+                if num_hits > 0:
+                    if hits[0].hsps[0].evalue > evalue:
+                        continue
+                    sseqid = hits[0].id
+                    family = hits[0].description
+                    # okay, print out annotations for GAG
+                    if not ID.endswith('-T1'):
+                        ID = ID + '-T1'
+                    out.write("%s\tnote\tPHI-Base:%s\n" % (ID, sseqid))
+
+
 def SwissProtBlast(input, cpus, evalue, tmpdir, GeneDict, diamond=True):
-    #run blastp against uniprot
+    # run blastp against uniprot
     blast_tmp = os.path.join(tmpdir, 'uniprot.xml')
     if diamond:
         blastdb = os.path.join(FUNDB,'uniprot.dmnd')
@@ -215,7 +255,7 @@ def SwissProtBlast(input, cpus, evalue, tmpdir, GeneDict, diamond=True):
         cmd = ['blastp', '-db', blastdb, '-outfmt', '5', '-out', blast_tmp, '-num_threads', str(cpus), '-max_target_seqs', '1', '-evalue', str(evalue), '-query', input]
     if not lib.checkannotations(blast_tmp):
         lib.runSubprocess(cmd, '.', lib.log)
-    #parse results
+    # parse results
     counter = 0
     total = 0
     with open(blast_tmp, 'rU') as results:
@@ -239,13 +279,13 @@ def SwissProtBlast(input, cpus, evalue, tmpdir, GeneDict, diamond=True):
                 passname = None
                 if not '_' in name and not ' ' in name and not '.' in name and number_present(name) and len(name) > 2 and not morethanXnumbers(name, 3):
                     passname = name
-                #need to do some filtering here of certain words
+                # need to do some filtering here of certain words
                 bad_words = ['(Fragment)', 'homolog', 'homolog,', 'AltName:']
-                descript = hdescript.split(' ') #turn string into array, splitting on spaces
+                descript = hdescript.split(' ')  # turn string into array, splitting on spaces
                 final_desc = [x for x in descript if x not in bad_words]
                 final_desc = ' '.join(final_desc)
                 total += 1
-                #add to GeneDict
+                # add to GeneDict
                 if passname:
                     counter += 1
                     if not ID in GeneDict:
@@ -258,6 +298,7 @@ def SwissProtBlast(input, cpus, evalue, tmpdir, GeneDict, diamond=True):
 def number_present(s):
     return any(i.isdigit() for i in s)
 
+
 def morethanXnumbers(s, num):
     count = 0
     for i in s:
@@ -267,24 +308,27 @@ def morethanXnumbers(s, num):
         return True
     else:
         return False
-    
+
+
 def capfirst(x):
     return x[0].upper() + x[1:]
-    
+
+
 def item2index(inputList, item):
-    #return the index of an item in the input list
+    # return the index of an item in the input list
     item_index = None
     for x in inputList:
         if item in x:
             item_index = inputList.index(x)
     return item_index
 
+
 def getEggNogHeaders(input):
     IDi, DBi, OGi, Genei, COGi, Desci = (None,)*6
     with open(input, 'rU') as infile:
         for line in infile:
             line = line.replace('\n', '')
-            if line.startswith('#query_name'): #this is HEADER
+            if line.startswith('#query_name'):  # this is HEADER
                 headerCols = line.split('\t')
                 IDi = item2index(headerCols, 'query_name')
                 Genei = item2index(headerCols, 'predicted_gene_name')
@@ -294,12 +338,13 @@ def getEggNogHeaders(input):
                 Desci = item2index(headerCols, 'eggNOG annot')
                 break
     return IDi, DBi, OGi, Genei, COGi, Desci
-    
+
+
 def parseEggNoggMapper(input, output, GeneDict):
     Definitions = {}
-    #indexes from header file
+    # indexes from header file
     IDi, DBi, OGi, Genei, COGi, Desci = getEggNogHeaders(input)
-    #take annotations file from eggnog-mapper and create annotations
+    # take annotations file from eggnog-mapper and create annotations
     with open(output, 'w') as out:
         with open(input, 'rU') as infile:
             for line in infile:
@@ -333,7 +378,7 @@ def parseEggNoggMapper(input, output, GeneDict):
                     product = capfirst(product)                  
                     #out.write("%s\tname\t%s\n" % (ID.split('-T1')[0], Gene))
                     #out.write("%s\tproduct\t%s\n" % (ID, product))
-                    #if Description != '':
+                    # if Description != '':
                     #    out.write("%s\tnote\t%s\n" % (ID, Description))
                     GeneID = ID.split('-T1')[0]
                     if not GeneID in GeneDict:
@@ -343,13 +388,13 @@ def parseEggNoggMapper(input, output, GeneDict):
     return Definitions
 
 
-#start here rest of script
-#create log file
+# start here rest of script
+# create log file
 log_name = 'funannotate-annotate.log'
 if os.path.isfile(log_name):
     os.remove(log_name)
 
-#initialize script, log system info and cmd issue at runtime
+# initialize script, log system info and cmd issue at runtime
 lib.setupLogging(log_name)
 FNULL = open(os.devnull, 'w')
 cmd_args = " ".join(sys.argv)+'\n'
@@ -357,18 +402,18 @@ lib.log.debug(cmd_args)
 print "-------------------------------------------------------"
 lib.SystemInfo()
 
-#get version of funannotate
+# get version of funannotate
 version = lib.get_version()
 lib.log.info("Running %s" % version)
 
-#check dependencies
+# check dependencies
 if args.antismash:
     programs = ['hmmscan', 'hmmsearch', 'diamond', 'bedtools']
 else:
     programs = ['hmmscan', 'hmmsearch', 'diamond']
 lib.CheckDependencies(programs)
 
-#setup funannotate DB path
+# setup funannotate DB path
 if args.database:
     FUNDB = args.database
 else:
@@ -378,24 +423,24 @@ else:
         lib.log.error('Funannotate database not properly configured, run funannotate setup.')
         sys.exit(1)
 
-#check database sources, so no problems later
+# check database sources, so no problems later
 sources = [os.path.join(FUNDB, 'Pfam-A.hmm.h3p'), os.path.join(FUNDB, 'dbCAN.hmm.h3p'), os.path.join(FUNDB,'merops.dmnd'), os.path.join(FUNDB,'uniprot.dmnd')]
 if not all([os.path.isfile(f) for f in sources]):
     lib.log.error('Database files not found in %s, run funannotate database and/or funannotate setup' % FUNDB)
     sys.exit(1)
 
-#write versions of Databases used to logfile
+# write versions of Databases used to logfile
 versDB = {}
 if not lib.checkannotations(os.path.join(FUNDB, 'funannotate-db-info.txt')):
-	lib.log.error('Database not properly configured, run funannotate database and/or funannotate setup')
-	sys.exit(1)
+    lib.log.error('Database not properly configured, run funannotate database and/or funannotate setup')
+    sys.exit(1)
 with open(os.path.join(FUNDB, 'funannotate-db-info.txt'), 'rU') as dbfile:
-	for line in dbfile:
-		line = line.strip()
-		name, type, file, version, date, num_records, mdchecksum = line.split('\t')
-		versDB[name] = version
+    for line in dbfile:
+        line = line.strip()
+        name, type, file, version, date, num_records, mdchecksum = line.split('\t')
+        versDB[name] = version
 
-#check Augustus config path as BUSCO needs it to validate species to use
+# check Augustus config path as BUSCO needs it to validate species to use
 if args.AUGUSTUS_CONFIG_PATH:
     AUGUSTUS = args.AUGUSTUS_CONFIG_PATH
 else:
@@ -409,14 +454,14 @@ if not os.path.isdir(os.path.join(AUGUSTUS, 'species')):
     lib.log.error("Augustus species folder not found at %s, exiting" % (os.path.join(AUGUSTUS, 'species')))
     sys.exit(1)
 
-#take care of some preliminary checks
+# take care of some preliminary checks
 if args.sbt == 'SBT':
     SBT = os.path.join(parentdir, 'lib', 'test.sbt')
     lib.log.info("No NCBI SBT file given, will use default, however if you plan to submit to NCBI, create one and pass it here '--sbt'")
 else:
     SBT = args.sbt
     
-#check other input files
+# check other input files
 if not os.path.isfile(SBT):
     lib.log.error("SBT file not found, exiting")
     sys.exit(1)
@@ -425,21 +470,21 @@ if args.antismash:
         lib.log.error("Antismash GBK file not found, exiting")
         sys.exit(1)
 
-#check buscos, download if necessary
+# check buscos, download if necessary
 if not os.path.isdir(os.path.join(FUNDB, args.busco_db)):
     lib.download_buscos(args.busco_db, FUNDB)
 
-#need to do some checks here of the input
+# need to do some checks here of the input
 genbank, Scaffolds, Protein, Transcripts, GFF, TBL = (None,)*6
 GeneCounts = 0
 if not args.input:
-    #did not parse folder of funannotate results, so need either gb + gff or fasta + proteins, + gff and also need to have args.out for output folder
+    # did not parse folder of funannotate results, so need either gb + gff or fasta + proteins, + gff and also need to have args.out for output folder
     if not args.out:
         lib.log.error("If you are not providing funannotate predict input folder, then you need to provide an output folder (--out)")
         sys.exit(1)
     else:
         outputdir = args.out
-        #create outputdir and subdirs
+        # create outputdir and subdirs
         if not os.path.isdir(outputdir):
             os.makedirs(outputdir)
             os.makedirs(os.path.join(outputdir, 'annotate_misc'))
@@ -460,7 +505,7 @@ if not args.input:
                 prefix = args.rename.replace('_', '')
             GeneCounts = lib.convertgff2tbl(GFF, badGFF, prefix, Scaffolds, Proteins, TBL)
     else:
-        #create output directories
+        # create output directories
         if not os.path.isdir(outputdir):
             os.makedirs(outputdir)
             os.makedirs(os.path.join(outputdir, 'annotate_misc'))
@@ -486,7 +531,7 @@ if not args.input:
             sys.exit(1)
         GeneCounts = lib.gb2parts(genbank, TBL, Proteins, Transcripts, Scaffolds)
 else:
-    #should be a folder, with funannotate files, thus store results there, no need to create output folder
+    # should be a folder, with funannotate files, thus store results there, no need to create output folder
     if not os.path.isdir(args.input):
         lib.log.error("%s directory does not exist" % args.input)
         sys.exit(1)
@@ -499,7 +544,7 @@ else:
     else:
         inputdir = os.path.join(args.input) #here user specified the predict_results folder, or it is a custom folder
 
-    #get files that you need
+    # get files that you need
     for file in os.listdir(inputdir):
         if file.endswith('.gbk'):
             genbank = os.path.join(inputdir, file)
@@ -508,7 +553,7 @@ else:
         if file.endswith('.tbl'):
             TBL = os.path.join(inputdir, file)
     
-    #now create the files from genbank input file for consistency in gene naming, etc
+    # now create the files from genbank input file for consistency in gene naming, etc
     if not genbank or not GFF:
         lib.log.error("Properly formatted 'funannotate predict' files do no exist in this directory")
         sys.exit(1)
@@ -535,25 +580,25 @@ else:
         TBL = os.path.join(outputdir, 'annotate_misc', 'genome.tbl')
         GeneCounts = lib.gb2parts(genbank, TBL, Proteins, Transcripts, Scaffolds)
 
-#double check that you have a TBL file, otherwise will have nothing to append to.
+# double check that you have a TBL file, otherwise will have nothing to append to.
 if not lib.checkannotations(TBL):
     lib.log.error("NCBI tbl file not found, exiting")
     sys.exit(1)
 
-#make sure logfiles directory is present, will need later
+# make sure logfiles directory is present, will need later
 if not os.path.isdir(os.path.join(outputdir, 'logfiles')):
     os.makedirs(os.path.join(outputdir, 'logfiles'))
 if not os.path.isdir(os.path.join(outputdir, 'annotate_results')):
     os.makedirs(os.path.join(outputdir, 'annotate_results'))
 
-#get absolute path for all input so there are no problems later, not using Transcripts yet could be error? so take out here
+# get absolute path for all input so there are no problems later, not using Transcripts yet could be error? so take out here
 Scaffolds, Proteins, GFF = [os.path.abspath(i) for i in [Scaffolds, Proteins, GFF]] #suggestion via GitHub
 
-#get organism and isolate from GBK file
+# get organism and isolate from GBK file
 organism, strain, isolate, accession, WGS_accession, gb_gi, version = (None,)*7
 if genbank:
     organism, strain, isolate, accession, WGS_accession, gb_gi, version = lib.getGBKinfo(genbank)
-    #since can't find a way to propage the WGS_accession, writing to a file and then parse here
+    # since can't find a way to propage the WGS_accession, writing to a file and then parse here
     if os.path.isfile(os.path.join(outputdir, 'update_results', 'WGS_accession.txt')):
         with open(os.path.join(outputdir, 'update_results', 'WGS_accession.txt'), 'rU') as infile:
             for line in infile:
@@ -563,8 +608,8 @@ if genbank:
                 else:
                     WGS_accession = line
 
-#if command line species/strain/isolate passed, over-write detected 
-#check if organism/species/isolate passed at command line, if so, overwrite what you detected.
+# if command line species/strain/isolate passed, over-write detected
+# check if organism/species/isolate passed at command line, if so, overwrite what you detected.
 if args.species:
     organism = args.species
 if args.strain:
@@ -586,21 +631,21 @@ lib.log.info("Adding Functional Annotation to %s, NCBI accession: %s" % (organis
 lib.log.info("Annotation consists of: {:,} gene models".format(GeneCounts))
 
 ############################################################################
-#start workflow here
+# start workflow here
 ProtCount = lib.countfasta(Proteins)
 lib.log.info('{0:,}'.format(ProtCount) + ' protein records loaded')
 if ProtCount < 1:
     lib.log.error("There are no gene models in this genbank file")
     sys.exit(1)
 
-#create tmpdir folder and split proteins into X CPUs to run with HMMER3 searches
+# create tmpdir folder and split proteins into X CPUs to run with HMMER3 searches
 protDir = os.path.join(outputdir, 'annotate_misc', 'split_prots')
 if not os.path.isdir(protDir):
     os.makedirs(protDir)
 lib.fasta2chunks(Proteins, args.cpus, os.path.join(outputdir, 'annotate_misc'), 'split_prots')
 splitProts = [os.path.join(protDir, f) for f in os.listdir(protDir) if os.path.isfile(os.path.join(protDir, f))]
 
-#run PFAM-A search
+# run PFAM-A search
 lib.log.info("Running HMMer search of PFAM version %s" % versDB.get('pfam'))
 pfam_results = os.path.join(outputdir, 'annotate_misc', 'annotations.pfam.txt')
 if not lib.checkannotations(pfam_results):
@@ -608,17 +653,17 @@ if not lib.checkannotations(pfam_results):
 num_annotations = lib.line_count(pfam_results)
 lib.log.info('{0:,}'.format(num_annotations) + ' annotations added')
 
-#initiate Gene Name/Product dictionary
+# initiate Gene Name/Product dictionary
 GeneProducts = {}
 
-#run SwissProt Blast search
+# run SwissProt Blast search
 lib.log.info("Running Diamond blastp search of UniProt DB version %s" % versDB.get('uniprot'))
 blast_out = os.path.join(outputdir, 'annotate_misc', 'annotations.swissprot.txt')
 SwissProtBlast(Proteins, args.cpus, 1e-5, os.path.join(outputdir, 'annotate_misc'), GeneProducts)
 #num_annotations = lib.line_count(blast_out)
 #lib.log.info('{0:,}'.format(num_annotations) + ' annotations added')
 
-#Check for EggNog annotations, parse if present
+# Check for EggNog annotations, parse if present
 eggnog_out = os.path.join(outputdir, 'annotate_misc', 'annotations.eggnog.txt')
 eggnog_result = os.path.join(outputdir, 'annotate_misc', 'eggnog.emapper.annotations')
 if args.eggnog:
@@ -631,7 +676,7 @@ if not lib.checkannotations(eggnog_result):
         cmd = ['emapper.py', '-m', 'diamond', '-i', Proteins, '-o', 'eggnog', '--cpu', str(args.cpus)]
         lib.runSubprocess(cmd, os.path.join(outputdir, 'annotate_misc'), lib.log)
     else:
-    	lib.log.info("Install eggnog-mapper or use webserver to improve functional annotation: https://github.com/jhcepas/eggnog-mapper")  
+        lib.log.info("Install eggnog-mapper or use webserver to improve functional annotation: https://github.com/jhcepas/eggnog-mapper")
 if lib.checkannotations(eggnog_result):
     lib.log.info("Parsing EggNog Annotations")
     EggNog = parseEggNoggMapper(eggnog_result, eggnog_out, GeneProducts)
@@ -642,8 +687,8 @@ else:
     lib.log.error("No Eggnog-mapper results found.")
     EggNog = {}
 
-#combine the results from UniProt and Eggnog to parse Gene names and product descriptions
-#load curated list
+# combine the results from UniProt and Eggnog to parse Gene names and product descriptions
+# load curated list
 lib.log.info("Combining UniProt/EggNog gene and product names using Gene2Product version %s" % versDB.get('gene2product'))
 CuratedNames = {}
 with open(os.path.join(FUNDB, 'ncbi_cleaned_gene_products.txt'), 'rU') as input:
@@ -669,14 +714,14 @@ for k,v in natsorted(GeneProducts.items()):
         elif x['name'].lower() in CuratedNames:
             GeneProduct = CuratedNames.get(x['name'].lower())
             GeneName = x['name']    
-    if not GeneName: #taking first one will default to swissprot if products for both
+    if not GeneName:  # taking first one will default to swissprot if products for both
         GeneName = v[0]['name']
         GeneProduct = v[0]['product']
         OriginalProd = GeneProduct
         thenots.append(GeneName)
-        #if not GeneName in NotInCurated:
+        # if not GeneName in NotInCurated:
         #    NotInCurated[GeneName] = GeneProduct
-    #now attempt to clean the product name
+    # now attempt to clean the product name
     rep = {'potential': 'putative', 'possible': 'putative', 'probable': 'putative', 'predicted': 'putative', 
            'uncharacterized': 'putative', 'uncharacterised': 'putative', 'homolog': '', 'EC': '', 'COG': '', 
            'inactivated': '', 'related': '', 'family': '', 'gene': 'protein', 'homologue': '','open reading frame': '',
@@ -685,10 +730,10 @@ for k,v in natsorted(GeneProducts.items()):
     rep = dict((re.escape(k), v) for k, v in rep.iteritems())
     pattern = re.compile("|".join(rep.keys()))
     GeneProduct = pattern.sub(lambda m: rep[re.escape(m.group(0))], GeneProduct)
-    #if gene name in product, convert to lowercase
+    # if gene name in product, convert to lowercase
     if GeneName in GeneProduct:
         GeneProduct = GeneProduct.replace(GeneName, GeneName.lower())
-    #check for some obvious errors, then change product description to gene name + p
+    # check for some obvious errors, then change product description to gene name + p
     if not GeneName in CuratedNames:
         if 'By similarity' in GeneProduct or 'Required for' in GeneProduct or 'nvolved in' in GeneProduct or 'protein '+GeneName == GeneProduct or 'nherit from' in GeneProduct or len(GeneProduct) > 100: #some eggnog descriptions are paragraphs....
             OriginalProd = GeneProduct
@@ -698,13 +743,13 @@ for k,v in natsorted(GeneProducts.items()):
                 NeedCurating[GeneName] = [(OriginalProd, GeneProduct)]
             else:
                 NeedCurating[GeneName].append((OriginalProd, GeneProduct))
-    #make sure not multiple spaces
+    # make sure not multiple spaces
     GeneProduct = ' '.join(GeneProduct.split())
     GeneProduct = GeneProduct.replace('()', '')
     if '(' in GeneProduct and not ')' in GeneProduct:
         GeneProduct = GeneProduct.split('(')[0].rstrip()
     GeneProduct = GeneProduct.replace(' ,', ',')
-    #populate dictionary of NotInCurated
+    # populate dictionary of NotInCurated
     if GeneName in thenots:
         if not GeneName in NotInCurated:
             NotInCurated[GeneName] = [(OriginalProd,GeneProduct)]
@@ -715,8 +760,8 @@ for k,v in natsorted(GeneProducts.items()):
     else:
         GeneSeen[GeneName].append((k,GeneProduct))
 
-#finally output the annotations
-#which genes are duplicates, need to append numbers to those gene names and then finally output annotations
+# finally output the annotations
+# which genes are duplicates, need to append numbers to those gene names and then finally output annotations
 Gene2ProdFinal = {}
 with open(os.path.join(outputdir, 'annotate_misc', 'annotations.genes-products.txt'), 'w') as gene_annotations:
     for key,value in natsorted(GeneSeen.items()):
@@ -732,7 +777,7 @@ with open(os.path.join(outputdir, 'annotate_misc', 'annotations.genes-products.t
 num_annotations = int(lib.line_count(os.path.join(outputdir, 'annotate_misc', 'annotations.genes-products.txt')) / 2)
 lib.log.info('{:,} gene name and product description annotations added'.format(num_annotations))
 
-#run MEROPS Blast search
+# run MEROPS Blast search
 lib.log.info("Running Diamond blastp search of MEROPS version %s" % versDB.get('merops'))
 blast_out = os.path.join(outputdir, 'annotate_misc', 'annotations.merops.txt')
 merops_results = os.path.join(outputdir, 'annotate_misc', 'merops.xml')
@@ -741,7 +786,16 @@ if not lib.checkannotations(blast_out):
 num_annotations = lib.line_count(blast_out)
 lib.log.info('{0:,}'.format(num_annotations) + ' annotations added')
 
-#run dbCAN search
+# run Pathogen-Host Interaction database Blast search  -- added by Nichole Wespe
+lib.log.info("Running Diamond blastp search of PHI")
+blast_out = os.path.join(outputdir, 'annotate_misc', 'annotations.phibase.txt')
+phi_results = os.path.join(outputdir, 'annotate_misc', 'phibase.xml')
+if not lib.checkannotations(blast_out):
+    PHIBlast(Proteins, args.cpus, 1e-5, os.path.join(outputdir, 'annotate_misc'), blast_out)
+num_annotations = lib.line_count(blast_out)
+lib.log.info('{0:,}'.format(num_annotations) + ' annotations added')
+
+# run dbCAN search
 dbCAN_out = os.path.join(outputdir, 'annotate_misc', 'annotations.dbCAN.txt')
 lib.log.info("Annotating CAZYmes using HMMer search of dbCAN version %s" % versDB.get('dbCAN'))
 if not lib.checkannotations(dbCAN_out):
@@ -749,7 +803,7 @@ if not lib.checkannotations(dbCAN_out):
 num_annotations = lib.line_count(dbCAN_out)
 lib.log.info('{:,} annotations added'.format(num_annotations))
 
-#run BUSCO OGS search
+# run BUSCO OGS search
 busco_out = os.path.join(outputdir, 'annotate_misc', 'annotations.busco.txt')
 lib.log.info("Annotating proteins with BUSCO %s models" % args.busco_db)
 buscoDB = os.path.join(FUNDB, args.busco_db)
@@ -758,7 +812,7 @@ if not lib.checkannotations(busco_out):
 num_annotations = lib.line_count(busco_out)
 lib.log.info('{0:,}'.format(num_annotations) + ' annotations added')
 
-#run Phobius if local is installed, otherwise you will have to use funannotate remote
+# run Phobius if local is installed, otherwise you will have to use funannotate remote
 phobius_out = os.path.join(outputdir, 'annotate_misc', 'phobius.results.txt')
 phobiusLog = os.path.join(outputdir, 'logfiles', 'phobius.log')
 if args.phobius:
@@ -776,7 +830,7 @@ else:
     if lib.checkannotations(phobius_out):
         lib.log.info("Found phobius pre-computed results")
         
-#run signalP if installed, have to manually install, so test if exists first, then run it if it does, parse results
+# run signalP if installed, have to manually install, so test if exists first, then run it if it does, parse results
 signalp_out = os.path.join(outputdir, 'annotate_misc', 'signalp.results.txt')
 secreted_out = os.path.join(outputdir, 'annotate_misc', 'annotations.secretome.txt')
 membrane_out = os.path.join(outputdir, 'annotate_misc', 'annotations.transmembrane.txt')
@@ -804,7 +858,7 @@ else:
     num_mem = 0
 lib.log.info('{0:,}'.format(num_secreted) + ' secretome and '+ '{0:,}'.format(num_mem) + ' transmembane annotations added')
 
-#interproscan
+# interproscan
 IPRCombined = os.path.join(outputdir, 'annotate_misc', 'iprscan.xml')
 IPR_terms = os.path.join(outputdir, 'annotate_misc', 'annotations.iprscan.txt')
 if args.iprscan and args.iprscan != IPRCombined:
@@ -820,7 +874,7 @@ else:
     cmd = [sys.executable, IPR2ANNOTATE, IPRCombined, IPR_terms]
     lib.runSubprocess(cmd, '.', lib.log)
 
-#check if antiSMASH data is given, if so parse and reformat for annotations and cluster textual output
+# check if antiSMASH data is given, if so parse and reformat for annotations and cluster textual output
 antismash_input = os.path.join(outputdir, 'annotate_misc', 'antiSMASH.results.gbk')
 if args.antismash:
     if os.path.isfile(antismash_input):
@@ -837,14 +891,14 @@ if lib.checkannotations(antismash_input): #result found
     lib.ParseAntiSmash(antismash_input, AntiSmashFolder, AntiSmashBed, AntiSmash_annotations) #results in several global dictionaries
     lib.GetClusterGenes(AntiSmashBed, GFF, GFF2clusters, Cluster_annotations) #results in dictClusters dictionary
 
-#if custom annotations passed, parse here
+# if custom annotations passed, parse here
 if args.annotations:
     lib.log.info("Parsing custom annotations from %s" % args.annotations)
     shutil.copyfile(args.annotations, os.path.join(outputdir, 'annotate_misc', 'annotations.custom.txt'))
     num_annotations = lib.line_count(os.path.join(outputdir, 'annotate_misc', 'annotations.custom.txt'))
     lib.log.info('{0:,}'.format(num_annotations) + ' annotations added')
     
-#now bring all annotations together and annotated genome using gag, remove any duplicate annotations
+# now bring all annotations together and annotated genome using gag, remove any duplicate annotations
 ANNOTS = os.path.join(outputdir, 'annotate_misc', 'all.annotations.txt')
 GeneNames = lib.getGeneBasename(Proteins)
 total_annotations = 0
@@ -859,7 +913,7 @@ with open(ANNOTS, 'w') as output:
                     total_annotations += 1
                     if not line.startswith(tuple(GeneNames)):
                         continue
-                    if line.count('\t') != 2: #make sure it is 3 columns
+                    if line.count('\t') != 2:  # make sure it is 3 columns
                         continue
                     if line not in lines_seen:
                         output.write(line)
