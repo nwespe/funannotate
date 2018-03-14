@@ -785,6 +785,50 @@ def countEVMpredictions(input):
                     hiq += 1
     return total, augustus, genemark, hiq, pasa, other
 
+def createEVMsourcedict(evm_out):
+    source_dict = OrderedDict()
+    with open(evm_out) as source_file:
+        for line in source_file.readlines():
+            if line[0] == '#':
+                startstop = line.split(' ')[6]
+                sources = []
+            elif line.startswith('\n'):
+                sources = (' ').join(sources)
+                programs = []
+                if 'Augustus' in sources:
+                    programs.append('Augustus')
+                if 'GeneMark' in sources:
+                    programs.append('GeneMark-ES')
+                source_dict[startstop] = programs
+            else:
+                sources.append(line.split('\t')[-1])
+        sources = ' '.join(sources)
+        programs = []
+        if 'Augustus' in sources:
+            programs.append('Augustus')
+        if 'GeneMark' in sources:
+            programs.append('GeneMark-ES')
+        source_dict[startstop] = programs
+    return source_dict
+
+def createVersionDict(version_file, fundb_file):
+    programs =  {'augustus': 'Augustus', 'gmes_petap.pl': 'GeneMark-ES'}
+    dbs = {'pfam': 'PFAM', 'interpro': 'InterPro', 'merops': 'MEROPS', 'uniprot': 'UniProt'}
+    # TODO: add missing: BUSCO, EggNOG, COG, CAZY, PHI-base, others?
+    version_dict = {}
+    with open(version_file) as version_info:
+        line_list = version_info.readlines()
+        for program, name in programs.items():
+            match = next((s for s in line_list if program in s), 'None: 0')
+            print(match)
+            version_dict[name] = match.split(':')[1].lstrip(' ').rstrip('\n')
+    with open(fundb_file) as db_info:
+        line_list = db_info.readlines()
+        for db, name in dbs.items():
+            match = next((s for s in line_list if db in s), 'None: 0')
+            version_dict[name] = match.split('\t')[3].rstrip(' ')
+    return version_dict
+
 def countGMAPtranscripts(input):
     count = 0
     with open(input, 'rU') as f:
@@ -1963,7 +2007,7 @@ def GFF2tbl(evm, trnascan, proteins, scaffLen, prefix, Numbering, SeqCenter, Seq
                         tbl.write('%s%i\t%s%i\tgene\n' % (partialStart, geneInfo['end'], partialStop, geneInfo['start']))
                         tbl.write('\t\t\tlocus_tag\t%s\n' % genes)
                         for num, exon in enumerate(geneInfo['mRNA']):
-                            if num == 0 and num == len(geneInfo['mRNA']) - 1: #single exon, so slightly differnt method
+                            if num == 0 and num == len(geneInfo['mRNA']) - 1: #single exon, so slightly different method
                                 tbl.write('%s%s\t%s%s\tmRNA\n' % (partialStart, exon[1], partialStop, exon[0]))
                             elif num == 0:
                                 tbl.write('%s%s\t%s\tmRNA\n' % (partialStart, exon[1], exon[0]))
