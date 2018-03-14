@@ -31,7 +31,12 @@ def fmtcols(mylist, cols):
              for i in range(0,num_lines))
     return "\n".join(lines)
 
-version = '1.0.2'
+try:
+    FUNDB = os.environ["FUNANNOTATE_DB"]
+except KeyError:
+    pass
+
+version = '1.3.0-beta'
 
 default_help = """
 Usage:       funannotate <command> <arguments>
@@ -253,20 +258,23 @@ Description: Script will run PASA mediated update of gene models. It can directl
              GAG. RapMap is optional but will speed up analysis if data is PE stranded.
     
 Required:  -i, --input              Funannotate folder or Genome in GenBank format (.gbk,.gbff).
-
-Optional:  -o, --out                Output folder name.
+    or
+           -f, --fasta              Genome in FASTA format
+           -g, --gff                Annotation in GFF3 format
+           --species                Species name, use quotes for binomial, e.g. "Aspergillus fumigatus"
+           
+Optional:  -o, --out                Output folder name
            -l, --left               Left/Forward FASTQ Illumina reads (R1)
            -r, --right              Right/Reverse FASTQ Illumina reads (R2)
            -s, --single             Single ended FASTQ reads
-           --sbt                    NCBI Submission file.
            --stranded               If RNA-seq library stranded. [RF,FR,F,R,no]
            --left_norm              Normalized left FASTQ reads (R1)
            --right_norm             Normalized right FASTQ reads (R2)
            --single_norm            Normalized single-ended FASTQ reads
            --trinity                Pre-computed Trinity transcripts (FASTA)
            --jaccard_clip           Turn on jaccard clip for dense genomes [Recommended for fungi]
-           --pasa_config            PASA assembly config file, i.e. from previous PASA run.
-           --no_antisense_filter    Skip anti-sense filtering.
+           --pasa_config            PASA assembly config file, i.e. from previous PASA run
+           --no_antisense_filter    Skip anti-sense filtering
            --no_normalize_reads     Skip read Normalization
            --no_trimmomatic         Skip Quality Trimming of reads
            --memory                 RAM to use for Jellyfish. Default: 50G
@@ -274,9 +282,11 @@ Optional:  -o, --out                Output folder name.
            --pasa_alignment_overlap PASA --stringent_alignment_overlap. Default: 30.0
            --max_intronlen          Maximum intron length. Default: 3000
            --min_protlen            Minimum protein length. Default: 50
+           --alt_transcripts        Expression threshold (percent) to keep alt transcripts. Default: 0.1 [0-1]
            --p2g                    NCBI p2g file (if updating NCBI annotation)
            -t, --tbl2asn            Assembly parameters for tbl2asn. Example: "-l paired-ends"           
-           --name                   Locus tag name (assigned by NCBI?). Default: use existing          
+           --name                   Locus tag name (assigned by NCBI?). Default: use existing  
+           --sbt                    NCBI Submission file        
            --species                Species name, use quotes for binomial, e.g. "Aspergillus fumigatus"
            --strain                 Strain name
            --isolate                Isolate name
@@ -321,7 +331,7 @@ Required:    -i, --input        Folder from funannotate predict
              -o, --out          Output folder for results
 
 Optional:    --sbt              NCBI submission template file. (Recommended)
-             -a, --annotations	Custom annotations (3 column tsv file)
+             -a, --annotations  Custom annotations (3 column tsv file)
              --eggnog           Eggnog-mapper annotations file (if NOT installed)
              --antismash        antiSMASH secondary metabolism results (GBK file from output)
              --iprscan          InterProScan5 XML file
@@ -329,6 +339,8 @@ Optional:    --sbt              NCBI submission template file. (Recommended)
              --isolate          Isolate name
              --strain           Strain name
              --rename           Rename GFF gene models with locus_tag from NCBI.
+             --fix              Gene/Product names fixed (TSV: GeneID\tName\tProduct)
+             --remove           Gene/Product names to remove (TSV: Gene\tProduct)
              --busco_db         BUSCO models. Default: dikarya
              -t, --tbl2asn      Additional parameters for tbl2asn. Example: "-l paired-ends"
              -d, --database     Path to funannotate database. Default: $FUNANNOTATE_DB
@@ -430,6 +442,7 @@ Description: Script takes a GenBank genome annotation file and an NCBI tbl file 
     
 Required:    -i, --input    Annotated genome in GenBank format.
              -t, --tbl      NCBI tbl annotation file.
+             -d, --drop     Gene models to remove/drop from annotation. File with locus_tag 1 per line.
 
 Optional:    -o, --out      Output folder
              --tbl2asn      Parameters for tbl2asn. Default: "-l paired-ends"
@@ -485,6 +498,7 @@ Description: Script will download/format necessary databases for funannotate.
 Options:     -i, --install    Download format databases. Default: all
                               [merops,uniprot,dbCAN,pfam,repeats,go,
                                mibig,interpro,busco_outgroups,gene2product]
+             -b, --busco_db   Busco Databases to install. Default: dikarya [all,fungi,aves,etc]
              -d, --database   Path to funannotate databse
              -u, --update     Check remote md5 and update if newer version found
              -f, --force      Force overwriting database
@@ -516,11 +530,17 @@ Description: This script is a wrapper for running InterProScan5 using Docker or 
 Arguments:   -i, --input        Funannotate folder or FASTA protein file. (Required)
              -m, --method       Search method to use: [local, docker] (Required)
              -n, --num          Number of fasta files per chunk. Default: 1000
+             -o, --out          Output XML InterProScan5 file
+                    
+    Docker arguments:
              -c, --cpus         Number of CPUs (total). Default: 12     
              --cpus_per_chunk   Number of cpus per Docker instance. Default: 4
-             --iprscan_path     Full path to interproscan.sh (local method only)                  
-             -o, --out          Output XML InterProScan5 file
-            
+             
+    Local arguments:
+             --iprscan_path     Full path to interproscan.sh (Required)
+             -c, --cpus         Number of InterProScan instances to run
+                                (configure cpu/thread control in interproscan.properties file)              
+                                
 Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
         """ % (sys.argv[1], version)
         
@@ -578,19 +598,32 @@ Arguments:   -i, --input            Proteome multi-fasta file. Required.
              --cpus                 Number of CPUs to use for BUSCO search.
              --show_buscos          List the busco_db options
              --show_outgroups       List the installed outgroup species.
+             -d, --database         Path to funannotate database. Default: $FUNANNOTATE_DB
                
 Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
         """ % (sys.argv[1], version)
         
         arguments = sys.argv[2:]
         if '--show_outgroups' in arguments:
-            files = [f for f in os.listdir(os.path.join(script_path, 'DB', 'outgroups'))]
+            if '-d' in arguments:
+                FUNDB = arguments[arguments.index('-d')+1]
+            elif '--database' in arguments:
+                FUNDB = arguments[arguments.index('--database')+1]
+            if not FUNDB:
+                print('Funannotate database not configured, set ENV variable or pass -d.')
+                sys.exit(1)
+            try:
+                files = [f for f in os.listdir(os.path.join(FUNDB, 'outgroups'))]
+            except OSError:
+                print('ERROR: %s/outgroups folder is not found, run funannotate setup.' % FUNDB)
+                sys.exit(1)
             files = [ x.replace('_buscos.fa', '') for x in files ]
             files = [ x for x in files if not x.startswith('.') ]
-            print "-----------------------------"
-            print "BUSCO Outgroups:"
-            print "-----------------------------"
-            print lib.list_columns(files, cols=3)
+            print("-----------------------------")
+            print("BUSCO Outgroups:")
+            print("-----------------------------")
+            print(lib.list_columns(files, cols=3))
+            print('')
             sys.exit(1)
         elif  '--show_buscos' in arguments:
             print "-----------------------------"

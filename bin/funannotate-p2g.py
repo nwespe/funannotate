@@ -8,7 +8,7 @@ parentdir = os.path.dirname(currentdir)
 sys.path.insert(0,parentdir)
 import lib.library as lib
 
-# setup menu with argparse
+#setup menu with argparse
 class MyFormatter(argparse.ArgumentDefaultsHelpFormatter):
     def __init__(self,prog):
         super(MyFormatter,self).__init__(prog,max_help_position=48)
@@ -16,24 +16,24 @@ parser=argparse.ArgumentParser(prog='funannotate-p2g.py',
     description='''Funannotate script to run tblastn/exonerate protein2genome.''',
     epilog="""Written by Jon Palmer (2016) nextgenusfs@gmail.com""",
     formatter_class = MyFormatter)
-parser.add_argument('-p', '--proteins', required=True, help='Protein multi-fasta input')
-parser.add_argument('-g', '--genome', required=True, help='Genome multi-fasta input')
+parser.add_argument('-p','--proteins', required=True, help='Protein multi-fasta input')
+parser.add_argument('-g','--genome', required=True, help='Genome multi-fasta input')
 parser.add_argument('--cpus', default=2, type=int, help='Number of CPUs')
 parser.add_argument('--tblastn', help='tBLASTN run previously')
-parser.add_argument('-o', '--out', required=True, help='Final exonerate output file')
-parser.add_argument('-t', '--tblastn_out', help='Save tblastn output')
-parser.add_argument('--maxintron', default=3000, help='Maximum intron size')
-parser.add_argument('--logfile', default='funannotate-p2g.log', help='logfile')
-parser.add_argument('--ploidy', default=1, type=int, help='Ploidy of assembly')
-parser.add_argument('-f', '--filter', required=True, default='tblastn', choices=['diamond', 'tblastn'],
-                    help='Method to use for pre-filter for exonerate')
+parser.add_argument('-o','--out', required=True, help='Final exonerate output file')
+parser.add_argument('-t','--tblastn_out', help='Save tblastn output')
+parser.add_argument('--maxintron', default = 3000, help='Maximum intron size')
+parser.add_argument('--logfile', default ='funannotate-p2g.log', help='logfile')
+parser.add_argument('--ploidy', default =1, type=int, help='Ploidy of assembly')
+parser.add_argument('--debug', action='store_true', help='Keep intermediate folders if error detected')
+parser.add_argument('-f','--filter', required=True, default='tblastn', choices=['diamond', 'tblastn'], help='Method to use for pre-filter for exonerate')
 args=parser.parse_args() 
 
 log_name = args.logfile
 if os.path.isfile(log_name):
     os.remove(log_name)
 
-# initialize script, log system info and cmd issue at runtime
+#initialize script, log system info and cmd issue at runtime
 lib.setupLogging(log_name)
 FNULL = open(os.devnull, 'w')
 cmd_args = " ".join(sys.argv)+'\n'
@@ -242,13 +242,17 @@ if args.tblastn_out:
     shutil.copyfile(BlastResult, args.tblastn_out)
 
 #finally clean-up your mess if failed is empty
-try:
-	os.rmdir(os.path.join(tmpdir, 'failed'))
-	empty = True
-except OSError:
-	empty = False
-if empty:
-	shutil.rmtree(tmpdir)
+if args.debug:
+	try:
+		os.rmdir(os.path.join(tmpdir, 'failed'))
+		empty = True
+	except OSError:
+		empty = False
+	if empty:
+		shutil.rmtree(tmpdir)
+	else:
+		lib.log.error("Failed exonerate alignments found, see files in %s" % os.path.join(tmpdir, 'failed'))
 else:
-	lib.log.error("Failed exonerate alignments found, see files in %s" % os.path.join(tmpdir, 'failed'))
+	if os.path.isfile(tmpdir):
+		shutil.rmtree(tmpdir)
 sys.exit(1)

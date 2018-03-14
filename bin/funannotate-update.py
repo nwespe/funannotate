@@ -1,12 +1,15 @@
 #!/usr/bin/env python
-
-import sys, os, subprocess, inspect, shutil, argparse, fnmatch
+from __future__ import division
+import sys, os, subprocess, inspect, shutil, argparse, fnmatch, itertools
 from Bio import SeqIO
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 parentdir = os.path.dirname(currentdir)
 sys.path.insert(0, parentdir)
 import lib.library as lib
+from lib.interlap import InterLap
+from collections import defaultdict
 from natsort import natsorted
+import numpy as np
 
 #setup menu with argparse
 class MyFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -16,7 +19,9 @@ parser = argparse.ArgumentParser(prog='funannotate-update.py', usage="%(prog)s [
     description = '''Script is a wrapper for automated Trinity/PASA reannotation.''',
     epilog = """Written by Jon Palmer (2017) nextgenusfs@gmail.com""",
     formatter_class = MyFormatter)
-parser.add_argument('-i', '--input', required=True, help='Genome in GBK format or funannotate folder')
+parser.add_argument('-i', '--input', help='Genome in GBK format or funannotate folder')
+parser.add_argument('-g', '--gff', help='Genome annotation in GFF3 format')
+parser.add_argument('-f', '--fasta', help='Genome sequence in FASTA format')
 parser.add_argument('-l', '--left', nargs='+', help='Left (R1) FASTQ Reads')
 parser.add_argument('--left_norm', help='Left (R1) FASTQ Reads')
 parser.add_argument('--right_norm', help='Right (R2) normalized FASTQ Reads')
@@ -38,7 +43,7 @@ parser.add_argument('--no_trimmomatic', action='store_true', help='skip quality 
 parser.add_argument('--no_antisense_filter', action='store_true', help='skip antisense filtering')
 parser.add_argument('--jaccard_clip', action='store_true', help='Turn on jaccard_clip for dense genomes')
 parser.add_argument('--kallisto', help='Kallisto abundances table')
-parser.add_argument('--name', help='Shortname for genes, perhaps assigned by NCBI, eg. VC83')
+parser.add_argument('--name', help='Shortname for genes, perhaps assigned by NCBI, eg. VC83_')
 parser.add_argument('--max_intronlen', default=3000, help='Maximum intron length for gene models')
 parser.add_argument('--min_protlen', default=50, type=int, help='Minimum amino acid length for valid gene model')
 parser.add_argument('--stranded', default = 'no', choices=['RF','FR','F','R','no'], help='RNA seq strandedness')
@@ -50,6 +55,7 @@ parser.add_argument('--PASAHOME', help='Path to PASA home directory, $PASAHOME')
 parser.add_argument('--TRINITYHOME', help='Path to Trinity config directory, $TRINITYHOME')
 parser.add_argument('--SeqCenter', default='CFMR', help='Sequencing center for GenBank tbl file')
 parser.add_argument('--SeqAccession', default='12345', help='Sequencing accession number')
+parser.add_argument('--alt_transcripts', default='0.10', help='Threshold to keep alt-transcripts, percent highest expression')
 args=parser.parse_args()
 
 #functions
@@ -74,87 +80,164 @@ def find_files(directory, pattern):
                 filename = os.path.join(root, basename)
                 yield filename
 
-def gbk2pasa(input, gffout, trnaout, fastaout, spliceout, exonout, proteinsout):
+def validateCDSmRNAPairs(gene, cds, mrna, strand):
+    '''
+    function to make sure CDS is contained inside mRNA exons
+    input is a list of lists of tuples for each
+    return the correctly phased lists, only move the mRNA as CDS is tied to the id
+    '''
+    def _order(lst):
+        return lst == sorted(lst) or lst == sorted(lst)[::-1]
+    #load first mRNA exon into InterLap
+    combined = []
+    num = len(cds)
+    warning = False
+    for i in range(0,num):
+        if strand == '+':
+            sortCDS = sorted(cds[i], key=lambda tup: tup[0])
+        else:
+            sortCDS = sorted(cds[i], key=lambda tup: tup[0], reverse=True)
+        compatible = []
+        for x in range(0,num):
+            if strand == '+':
+                sortExon = sorted(mrna[x], key=lambda tup: tup[0])
+            else:
+                sortExon = sorted(mrna[x], key=lambda tup: tup[0], reverse=True)
+            #simple first, if more cds than exons it is not compatible
+            if len(sortCDS) > len(sortExon):
+                compatible.append(False)
+                continue
+            result = True
+            inter = InterLap(mrna[x])
+            for i,coord in enumerate(sortCDS):
+                if coord in inter:
+                    hit = list(inter.find(coord))[0]
+                    diff = np.subtract(coord,hit)
+                    if diff[0] < 0 or diff[1] > 0: #then it cannot contain the cds so has to be wrong
+                        result = False
+                    if len(sortCDS) > 1:  
+                        if i != 0 or (i+1) != len(sortCDS): #if an internal CDS, then must match perfectly or its wrong
+                            if diff[0] != 0 and diff[1] != 0:
+                                result = False
+                        elif i == 0:
+                            if strand == '+':
+                                if diff[1] != 0:
+                                    result = False
+                            else:
+                                if diff[0] != 0:
+                                    result = False
+                        elif (i+1) == len(sortCDS):
+                            if strand == '+':    
+                                if diff[0] != 0:
+                                    return False
+                            else:
+                                if diff[1] != 0:
+                                    return False             
+            compatible.append(result) 
+        combined.append(compatible)
+    valid_orders = []
+    for test in list(itertools.permutations(range(0,len(combined)),len(combined))):
+        #test is a tuple, slice list to see if all True
+        tester = []
+        for num,x in enumerate(test):
+            tester.append(combined[num][x])
+        if all(tester):
+            valid_orders.append(list(test))
+    mRNA_order = valid_orders[0]      
+    if not _order(mRNA_order):
+        lib.log.debug('%s CDS/mRNA features out of phase, trying to fix. %s' % (gene, mRNA_order))
+        if len(valid_orders) > 1:
+            lib.log.debug('%s had %i possible solutions for CDS/mRNA, expect errors...' % (gene, len(valid_orders)))
+            warning = True
+    mRNAout = []
+    for y in mRNA_order:
+        mRNAout.append(mrna[y])
+    return cds, mRNAout, warning
+
+def gbk2pasaNEW(input, gff, trnaout, fastaout, spliceout, exonout, proteinsout):
+    '''
+    function is to parse a genbank flat file and move protein coding genes into GFF3
+    and then parse out splice sites for hisat2. also filter tRNA gene models and move to
+    new GFF3 file for adding back after PASA
+    '''
     LocusTags = []
     multiExon = {}
-    with open(gffout, 'w') as gff:
-        gff.write("##gff-version 3\n")
+    genes = {}
+    with open(fastaout, 'w') as fasta:
+        with open(input, 'rU') as gbk:
+            for record in SeqIO.parse(gbk, 'genbank'):
+                fasta.write(">%s\n%s\n" % (record.id, record.seq))
+                for f in record.features:
+                    lib.gb_feature_add2dict(f, record, genes)
+    #out of order mRNA/CDS in genbank files can break this... so try to validate those with multiple transcripts
+    warn = False
+    for k,v in natsorted(genes.items()):
+        if v['type'] == 'mRNA' and len(v['ids']) > 1:
+            confirmedCDS,confirmedExons, warning = validateCDSmRNAPairs(k, v['CDS'], v['mRNA'], v['strand'])
+            if warning:
+                warn = True
+            genes[k]['CDS'] = confirmedCDS
+            genes[k]['mRNA'] = confirmedExons
+    if warn:
+        lib.log.info("GenBank file has multiple transcripts per locus, I tried my hardest to match them up but can't gaurantee there aren't errors. You can blame NCBI. You may want to try to pass a GFF3 + FASTA files instead of GBK.")
+    with open(gff, 'w') as gffout:
+        gffout.write('##gff-version 3\n')
         with open(trnaout, 'w') as trna:
-            with open(fastaout, 'w') as fasta:
-                with open(proteinsout, 'w') as proteins:
-                    with open(input, 'rU') as gbk:
-                        for record in SeqIO.parse(gbk, 'genbank'):
-                            fasta.write(">%s\n%s\n" % (record.id, record.seq))
-                            for f in record.features:
-                                if f.type == 'CDS':
-                                    chr = record.id
-                                    ID = f.qualifiers['locus_tag'][0]
-                                    if not ID in LocusTags:
-                                        LocusTags.append(ID)
-                                    protID = f.qualifiers['protein_id'][0]
-                                    protSeq = f.qualifiers['translation'][0]
-                                    product = f.qualifiers['product'][0]
-                                    proteins.write('>%s|%s\n%s\n' % (ID,protID,protSeq))
-                                    start = f.location.nofuzzy_start + 1
-                                    end = f.location.nofuzzy_end
-                                    strand = f.location.strand
-                                    if strand == 1:
-                                        strand = '+'
-                                    elif strand == -1:
-                                        strand = '-'
-                                    num_exons = len(f.location.parts)
-                                    current_phase = int(f.qualifiers['codon_start'][0]) - 1 #need to adjust NCBI to GFF3 notation
-                                    gff.write("%s\tGenBank\tgene\t%s\t%s\t.\t%s\t.\tID=%s\n" % (chr, start, end, strand, ID))
-                                    gff.write("%s\tGenBank\tmRNA\t%s\t%s\t.\t%s\t.\tID=%s-T1;Parent=%s;product=%s\n" % (chr, start, end, strand, ID, ID, product))
-                                    if num_exons < 2: #only a single exon
-                                        ex_start = str(f.location.nofuzzy_start + 1)
-                                        ex_end = str(f.location.nofuzzy_end)
-                                        gff.write("%s\tGenBank\texon\t%s\t%s\t.\t%s\t.\tID=%s-T1.exon1;Parent=%s-T1\n" % (chr, ex_start, ex_end, strand, ID, ID))
-                                        gff.write("%s\tGenBank\tCDS\t%s\t%s\t.\t%s\t%i\tID=%s-T1.cds;Parent=%s-T1\n" % (chr, ex_start, ex_end, strand, current_phase, ID, ID))
-                                    else: #more than 1 exon, so parts sub_features
-                                        splices = []
-                                        for i in range(0,num_exons):
-                                            ex_start = str(f.location.parts[i].nofuzzy_start + 1)
-                                            ex_end = str(f.location.parts[i].nofuzzy_end)
-                                            ex_num = i + 1
-                                            gff.write("%s\tGenBank\texon\t%s\t%s\t.\t%s\t.\tID=%s-T1.exon%i;Parent=%s-T1\n" % (chr, ex_start, ex_end, strand, ID, ex_num, ID))
-                                            gff.write("%s\tGenBank\tCDS\t%s\t%s\t.\t%s\t%i\tID=%s-T1.cds;Parent=%s-T1\n" % (chr, ex_start, ex_end, strand, current_phase, ID, ID))
-                                            current_phase = (current_phase - (int(ex_end) - int(ex_start) + 1)) % 3
-                                            if current_phase == 3:
-                                                current_phase = 0
-                                            #ss and exons are 0-based position, so 1 less than GFF
-                                            exons_start = int(ex_start) - 1
-                                            exons_end = int(ex_end) -1                                            
-                                            #add to exon dictionary
-                                            if not ID in multiExon:
-                                                multiExon[ID] = [chr, strand, [(exons_start,exons_end)]]
-                                            else:
-                                                multiExon[ID][2].append((exons_start,exons_end))
-                                #here lets enforce new NCBI tRNA rules about length to prevent tbl2asn errors later on     
-                                if f.type == 'tRNA':
-                                    ID = f.qualifiers['locus_tag'][0]
-                                    if not ID in LocusTags:
-                                        LocusTags.append(ID)
-                                    start = f.location.nofuzzy_start
-                                    end = f.location.nofuzzy_end
-                                    strand = f.location.strand
-                                    if strand == 1:
-                                        strand = '+'
-                                        length = abs(int(end) - int(start))
-                                    elif strand == -1:
-                                        strand = '-'
-                                        length = abs(int(start) - int(end))
-                                    try:
-                                        product = f.qualifiers['product'][0]
-                                    except KeyError:
-                                        product = "tRNA-XXX"
-                                    chr = record.id
-                                    if length < 50 or length > 150:
-                                        continue
+            with open(proteinsout, 'w') as protout:
+                for k,v in natsorted(genes.items()):
+                    if not k in LocusTags:
+                        LocusTags.append(k)
+                    if v['type'] == 'mRNA':
+                        #write GFF gene feature
+                        if v['name']:
+                            gffout.write("{:}\tGenBank\tgene\t{:}\t{:}\t.\t{:}\t.\tID={:};Name={:};\n".format(v['contig'], v['location'][0], v['location'][1], v['strand'], k, v['name']))
+                        else:
+                            gffout.write("{:}\tGenBank\tgene\t{:}\t{:}\t.\t{:}\t.\tID={:};\n".format(v['contig'], v['location'][0], v['location'][1], v['strand'], k))
+                        for i in range(0,len(v['ids'])):                 
+                            #now write mRNA feature
+                            gffout.write("{:}\tGenBank\t{:}\t{:}\t{:}\t.\t{:}\t.\tID={:};Parent={:};product={:};\n".format(v['contig'], v['type'], v['location'][0], v['location'][1], v['strand'], v['ids'][i], k, v['product'][i]))
+                            protout.write('>%s %s\n%s\n' % (v['ids'][i], k, v['protein'][i]))
+                            #write the exons and CDS features
+                            num_exons = len(v['mRNA'][i])
+                            for x in range(0,num_exons):
+                                ex_num = x + 1
+                                gffout.write("{:}\tGenBank\texon\t{:}\t{:}\t.\t{:}\t.\tID={:}.exon{:};Parent={:};\n".format(v['contig'], v['mRNA'][i][x][0], v['mRNA'][i][x][1], v['strand'], v['ids'][i], ex_num, v['ids'][i]))                          
+                                if num_exons > 1:
+                                    #ss and exons are 0-based position, so 1 less than GFF
+                                    exons_start = int(v['mRNA'][i][x][0]) - 1
+                                    exons_end = int(v['mRNA'][i][x][1]) -1                                            
+                                    #add to exon dictionary
+                                    if not v['ids'][i] in multiExon:
+                                        multiExon[v['ids'][i]] = [v['contig'], v['strand'], [(exons_start,exons_end)]]
                                     else:
-                                        trna.write("%s\tGenBank\tgene\t%s\t%s\t.\t%s\t.\tID=%s\n" % (chr, start, end, strand, ID))
-                                        trna.write("%s\tGenBank\ttRNA\t%s\t%s\t.\t%s\t.\tID=%s-T1;Parent=%s;product=%s\n" % (chr, start, end, strand, ID, ID, product))
-                                        trna.write("%s\tGenBank\texon\t%s\t%s\t.\t%s\t.\tID=%s-T1.exon1;Parent=%s-T1\n" % (chr, start, end, strand, ID, ID))
+                                        multiExon[v['ids'][i]][2].append((exons_start,exons_end))                               
+                            num_cds = len(v['CDS'][i])
+                            current_phase = v['codon_start'][i] - 1 #GFF3 phase is 1 less than flat file
+                            for y in range(0,num_cds):
+                                gffout.write("{:}\tGenBank\tCDS\t{:}\t{:}\t.\t{:}\t{:}\tID={:}.cds;Parent={:};\n".format(v['contig'], v['CDS'][i][y][0], v['CDS'][i][y][1], v['strand'], current_phase, v['ids'][i], v['ids'][i]))
+                                current_phase = (current_phase - (int(v['CDS'][i][y][1]) - int(v['CDS'][i][y][0]) + 1)) % 3
+                                if current_phase == 3:
+                                    current_phase = 0
+                    elif v['type'] == 'tRNA' or v['type'] == 'rRNA':
+                        #check length of tRNA gene should be between 50 and 150
+                        if v['type'] == 'tRNA':
+                            if v['strand'] == '+':
+                                length = abs(int(v['location'][1]) - int(v['location'][0]))
+                            else:
+                                length = abs(int(v['location'][0]) - int(v['location'][1]))
+                        else:
+                            length = 100 #just a placeholder for rRNA features --> not sure if they have length requirements?
+                        if length < 50 or length > 150:
+                            continue
+                        trna.write("{:}\tGenBank\tgene\t{:}\t{:}\t.\t{:}\t.\tID={:};\n".format(v['contig'], v['location'][0], v['location'][1], v['strand'], k))
+                        for i in range(0, len(v['ids'])):
+                            trna.write("{:}\tGenBank\t{:}\t{:}\t{:}\t.\t{:}\t.\tID={:};Parent={:};product={:};\n".format(v['contig'], v['type'], v['location'][0], v['location'][1], v['strand'], v['ids'][i], k, v['product'][i]))
+                            if v['type'] == 'tRNA':
+                                num_exons = len(v['mRNA'][i])
+                                for x in range(0,num_exons):
+                                    ex_num = x + 1
+                                    trna.write("{:}\tGenBank\texon\t{:}\t{:}\t.\t{:}\t.\tID={:}.exon{:};Parent={:};\n".format(v['contig'], v['mRNA'][i][x][0], v['mRNA'][i][x][1], v['strand'], v['ids'][i], ex_num, v['ids'][i]))                   
+    
     #parse splice sites and write to file
     with open(exonout, 'w') as exon:
         with open(spliceout, 'w') as splicer:
@@ -167,21 +250,120 @@ def gbk2pasa(input, gffout, trnaout, fastaout, spliceout, exonout, proteinsout):
                     splices.append((sortedList[i-1][1], sortedList[i][0]))
                 for x in splices:
                     splicer.write('%s\t%i\t%i\t%s\n' % (v[0], x[0], x[1], v[1]))
-    
     #finally lets return the base locus tag name and the last number
     lastTag = natsorted(LocusTags)[-1]
-    tag, count = lastTag.split('_')
+    if '_' in lastTag:
+        tag, count = lastTag.split('_')
+        tag = tag+'_'
+    else:
+        for i,c in enumerate(lastTag):
+            if c.isdigit():
+                tag = lastTag[:i]
+                count = lastTag[i:]
+                break
+    justify = len(count)
+    return tag, count, justify
+    
+def gff2pasa(gff_in, fasta, gff_out, trnaout, spliceout, exonout):
+    '''
+    function to parse GFF3 input file and split protein coding models from tRNA and/or rRNA
+    models. Generate Hisat2 splice and exon files for mapping.
+    '''
+    #load into funanotate structured dictionary
+    LocusTags = []
+    multiExon = {}  
+    genes = {}
+    genes = lib.gff2dict(gff_in, fasta, genes)
+    #now loop through dictionary and output desired files
+    with open(gff_out, 'w') as gffout:
+        gffout.write('##gff-version 3\n')
+        with open(trnaout, 'w') as trna:
+            for k,v in natsorted(genes.items()):
+                if not k in LocusTags:
+                    LocusTags.append(k)
+                if v['type'] == 'mRNA':
+                    #write GFF gene feature
+                    if v['name']:
+                        gffout.write("{:}\t{:}\tgene\t{:}\t{:}\t.\t{:}\t.\tID={:};Name={:};\n".format(v['contig'], v['source'], v['location'][0], v['location'][1], v['strand'], k, v['name']))
+                    else:
+                        gffout.write("{:}\t{:}\tgene\t{:}\t{:}\t.\t{:}\t.\tID={:};\n".format(v['contig'], v['source'], v['location'][0], v['location'][1], v['strand'], k))
+                    for i in range(0,len(v['ids'])):                 
+                        #now write mRNA feature
+                        gffout.write("{:}\t{:}\t{:}\t{:}\t{:}\t.\t{:}\t.\tID={:};Parent={:};product={:};\n".format(v['contig'], v['source'], v['type'], v['location'][0], v['location'][1], v['strand'], v['ids'][i], k, v['product'][i]))
+                        #write the exons and CDS features
+                        num_exons = len(v['mRNA'][i])
+                        for x in range(0,num_exons):
+                            ex_num = x + 1
+                            gffout.write("{:}\t{:}\texon\t{:}\t{:}\t.\t{:}\t.\tID={:}.exon{:};Parent={:};\n".format(v['contig'], v['source'], v['mRNA'][i][x][0], v['mRNA'][i][x][1], v['strand'], v['ids'][i], ex_num, v['ids'][i]))                          
+                            if num_exons > 1:
+                                #ss and exons are 0-based position, so 1 less than GFF
+                                exons_start = int(v['mRNA'][i][x][0]) - 1
+                                exons_end = int(v['mRNA'][i][x][1]) -1                                            
+                                #add to exon dictionary
+                                if not v['ids'][i] in multiExon:
+                                    multiExon[v['ids'][i]] = [v['contig'], v['strand'], [(exons_start,exons_end)]]
+                                else:
+                                    multiExon[v['ids'][i]][2].append((exons_start,exons_end))                               
+                        num_cds = len(v['CDS'][i])
+                        current_phase = v['codon_start'][i] - 1 #GFF3 phase is 1 less than flat file
+                        for y in range(0,num_cds):
+                            gffout.write("{:}\t{:}\tCDS\t{:}\t{:}\t.\t{:}\t{:}\tID={:}.cds;Parent={:};\n".format(v['contig'], v['source'], v['CDS'][i][y][0], v['CDS'][i][y][1], v['strand'], current_phase, v['ids'][i], v['ids'][i]))
+                            current_phase = (current_phase - (int(v['CDS'][i][y][1]) - int(v['CDS'][i][y][0]) + 1)) % 3
+                            if current_phase == 3:
+                                current_phase = 0
+                elif v['type'] == 'tRNA' or v['type'] == 'rRNA':
+                    #check length of tRNA gene should be between 50 and 150
+                    if v['type'] == 'tRNA':
+                        if v['strand'] == '+':
+                            length = abs(int(v['location'][1]) - int(v['location'][0]))
+                        else:
+                            length = abs(int(v['location'][0]) - int(v['location'][1]))
+                    else:
+                        length = 100 #just a placeholder for rRNA features --> not sure if they have length requirements?
+                    if length < 50 or length > 150:
+                        continue
+                    trna.write("{:}\t{:}\tgene\t{:}\t{:}\t.\t{:}\t.\tID={:};\n".format(v['contig'], v['source'], v['location'][0], v['location'][1], v['strand'], k))
+                    for i in range(0, len(v['ids'])):
+                        trna.write("{:}\t{:}\t{:}\t{:}\t{:}\t.\t{:}\t.\tID={:};Parent={:};product={:};\n".format(v['contig'], v['source'], v['type'], v['location'][0], v['location'][1], v['strand'], v['ids'][i], k, v['product'][i]))
+                        if v['type'] == 'tRNA':
+                            num_exons = len(v['mRNA'][i])
+                            for x in range(0,num_exons):
+                                ex_num = x + 1
+                                trna.write("{:}\t{:}\texon\t{:}\t{:}\t.\t{:}\t.\tID={:}.exon{:};Parent={:};\n".format(v['contig'], v['source'], v['mRNA'][i][x][0], v['mRNA'][i][x][1], v['strand'], v['ids'][i], ex_num, v['ids'][i]))
+    
+    #parse splice sites and write to file
+    with open(exonout, 'w') as exon:
+        with open(spliceout, 'w') as splicer:
+            for k,v in natsorted(multiExon.items()):
+                sortedList = sorted(v[2], key=lambda tup: tup[0])
+                for y in sortedList:
+                    exon.write("%s\t%i\t%i\t%s\n" % (v[0], y[0], y[1], v[1])) 
+                splices = []
+                for i in range(1, len(sortedList)):
+                    splices.append((sortedList[i-1][1], sortedList[i][0]))
+                for x in splices:
+                    splicer.write('%s\t%i\t%i\t%s\n' % (v[0], x[0], x[1], v[1]))
+    #finally lets return the base locus tag name and the last number
+    lastTag = natsorted(LocusTags)[-1]
+    if '_' in lastTag:
+        tag, count = lastTag.split('_')
+        tag = tag+'_'
+    else:
+        for i,c in enumerate(lastTag):
+            if c.isdigit():
+                tag = lastTag[:i]
+                count = lastTag[i:]
+                break
     justify = len(count)
     return tag, count, justify
 
+    
 def Funzip(input, output, cpus):
     '''
     function to unzip as fast as it can, pigz -> bgzip -> gzip
     '''
     if lib.which('pigz'):
         cmd = ['pigz', '--decompress', '-c', '-p', str(cpus), input]
-    elif lib.which('bgzip'):
-        cmd = ['bgzip', '--decompress', '-c', '-@', str(cpus), input]
     else:
         cmd = ['gzip', '--decompress', '-c', input]
     try:
@@ -196,8 +378,6 @@ def Fzip(input, output, cpus):
     '''
     if lib.which('pigz'):
         cmd = ['pigz', '-c', '-p', str(cpus), input]
-    elif lib.which('bgzip'):
-        cmd = ['bgzip', '-c', '-@', str(cpus), input]
     else:
         cmd = ['gzip', '-c', input]
     try:
@@ -212,8 +392,6 @@ def Fzip_inplace(input, cpus):
     '''
     if lib.which('pigz'):
         cmd = ['pigz', '-f', '-p', str(cpus), input]
-    elif lib.which('bgzip'):
-        cmd = ['bgzip', '-f', '-@', str(cpus), input]
     else:
         cmd = ['gzip', '-f', input]
     try:
@@ -327,6 +505,8 @@ def runTrinityGG(genome, readTuple, hisatexons, hisatss, output):
     hisat2bam = os.path.join(tmpdir, 'hisat2.coordSorted.bam')
     #use bash wrapper for samtools piping for SAM -> BAM -> sortedBAM
     bamthreads = (args.cpus + 2 // 2) // 2 #use half number of threads for bam compression threads
+    if bamthreads > 4:
+        bamthreads = 4
     if args.stranded != 'no' and not readTuple[2]:
         hisat2cmd = ['hisat2', '-p', str(args.cpus), '--max-intronlen', str(args.max_intronlen), '--dta', '-x', os.path.join(tmpdir, 'hisat2.genome'), '--rna-strandness', args.stranded]
     else:
@@ -403,6 +583,8 @@ def removeAntiSense(input, readTuple, output):
     '''
     lib.log.info("Running anti-sense filtering of Trinity transcripts")
     bamthreads = (args.cpus + 2 // 2) // 2 #use half number of threads for bam compression threads
+    if bamthreads > 4:
+        bamthreads = 4
     aligner = choose_aligner()
     if aligner == 'hisat2':
         lib.log.info("Building Hisat2 index of "+"{0:,}".format(lib.countfasta(input))+" trinity transcripts")
@@ -535,6 +717,7 @@ def runPASA(genome, transcripts, stranded, intronlen, cpus, previousGFF, dbname,
         pasa_cpus = cpus / 2
     else:
         pasa_cpus = 2
+    pasa_cpus = int(pasa_cpus)
     #create tmpdir
     folder = os.path.join(tmpdir, 'pasa')
     if not os.path.isdir(folder):
@@ -650,73 +833,92 @@ def runKallisto(input, fasta, readTuple, stranded, cpus, output):
 
     #modify kallisto ouput to map gene names to each mRNA ID so you know what locus they have come from
     mRNADict = {}
-    #since mRNA is unique, parse the transcript file which has mRNAID genID in header
+    #since mRNA is unique, parse the transcript file which has mRNAID geneID in header
     with open(PASAtranscripts, 'rU') as transin:
         for line in transin:
             if line.startswith('>'):
+                line = line.rstrip()
                 line = line.replace('>', '')
                 cols = line.split(' ')
                 mRNAID = cols[0]
                 geneID = cols[1]
+                location = cols[-1]
                 if not mRNAID in mRNADict:
-                    mRNADict[mRNAID] = geneID
-    #now make new tsv file with #mRNAID geneID  TPM
+                    mRNADict[mRNAID] = (geneID, location)
+    
+    #some PASA models can have incomplete CDS and are wrong, get list of incompletes to ignore list
+    ignore = []
+    with open(input, 'rU') as infile:
+        for line in infile:
+            if line.startswith('#PROT'):
+                if line.endswith('\t\n'):
+                    ID = line.split(' ')[1]
+                    ignore.append(ID)
+    if len(ignore) > 0:
+        lib.log.debug("Ignoring %i incomplete PASA models: %s" % (len(ignore), ','.join(ignore)))
+                    
+    #now make new tsv file with #mRNAID geneID location TPM
     with open(output, 'w') as outfile:
-        outfile.write("#mRNA-ID\tgene-ID\tTPM\n")
+        outfile.write("#mRNA-ID\tgene-ID\tLocation\tTPM\n")
         with open(os.path.join(folder, 'kallisto', 'abundance.tsv'), 'rU') as infile:
             for line in infile:
                 if line.startswith('targed_id'):
                     continue
-                line = line.replace('\n', '')
+                line = line.rstrip()
                 cols = line.split('\t')
-                geneID = mRNADict.get(cols[0])
-                outfile.write('%s\t%s\t%s\n' % (cols[0], geneID, cols[4]))
+                if cols[0] in ignore:
+                    continue
+                if cols[0] in mRNADict:
+                    geneHit = mRNADict.get(cols[0])
+                    geneID = geneHit[0]
+                    location = geneHit[1]
+                    outfile.write('%s\t%s\t%s\t%s\n' % (cols[0], geneID, location, cols[4]))
 
-    
-def getBestModel(input, fasta, abundances, outfile):
-    #enforce the minimum protein length, generate list of IDs to ignore
-    lib.log.info("Parsing Kallisto results and selecting best gene model")
-    ignore = []
-    allproteins = os.path.join(tmpdir, 'all_proteins.fasta')
-    cmd = [os.path.join(PASA, 'misc_utilities', 'gff3_file_to_proteins.pl'), input, fasta, 'prot']
-    lib.runSubprocess2(cmd, '.', lib.log, allproteins)
-    with open(allproteins, 'rU') as protfile:
-        for record in SeqIO.parse(protfile, 'fasta'):
-            Seq = str(record.seq)
-            if Seq.endswith('*'):
-                Seq = Seq[:-1] # remove stop codon
-            if len(record.seq) < args.min_protlen:
-                ignore.append(record.id)
-            #may want to filter any internal stops here as well
-            if '*' in Seq:
-                ignore.append(record.id)
-    if len(ignore) > 0:
-        lib.log.debug("%i model(s) less than minimum protein length (%i) or contain internal stops, dropping" % (len(ignore), args.min_protlen))
+def getBestModels(input, fasta, abundances, alt_transcripts, outfile):
+    #function to parse PASA results and generate GFF3; supports multiple transcripts
+    if float(alt_transcripts) == 0:
+        lib.log.info("Parsing Kallisto results. Keeping all alt-splicing transcripts at each locus.")
+    elif float(alt_transcripts) < 1:
+        lib.log.info("Parsing Kallisto results. Keeping alt-splicing transcipts if expressed at least {0:.1f}% of highest transcript per locus.".format(float(alt_transcripts)*100))
     else:
-        lib.log.debug("0 models less than minimum protein length")           
-    #now parse the output, get list of bestModels
+        lib.log.info("Parsing Kallisto results. Keeping best transcript at each locus.")
     bestModels = {}
+    locations = {}
     with open(abundances, 'rU') as tpms:
         for line in tpms:
-            line = line.replace('\n', '')
+            line = line.rstrip()
             if line.startswith('#') or line.startswith('target_id'):
                 continue
-            cols = line.split('\t')
-            #check ignore list
-            if cols[0] in ignore:
-                continue
-            if not cols[1] in bestModels:
-                bestModels[cols[1]] = (cols[0], cols[2])
+            transcriptID, geneID, Loc, TPM = line.split('\t')
+            if not Loc in locations:
+                locations[Loc] = geneID
+                geneLocus = geneID
             else:
-                oldTPM = bestModels.get(cols[1])[1]
-                if float(cols[2]) > float(oldTPM):
-                    bestModels[cols[1]] = (cols[0], cols[2])
-    bestModelFile = os.path.join(tmpdir, 'best_hits.txt')
+                geneLocus = locations.get(geneID)
+            if not geneLocus in bestModels:
+                bestModels[geneLocus] = [(transcriptID, float(TPM))]
+            else:
+                bestModels[geneLocus].append((transcriptID,float(TPM)))
+    #now we have geneID dictionary containing list of tuples of of transcripts
+    #loop through each locus grabbing transcript IDs of those models to keep
+    #use best expression value * alt_transcript threshold to filter models
+    #alt_transcript == 1 would be then only keeping best hit
     extractList = []
-    with open(bestModelFile, 'w') as bmout:
-        for k,v in natsorted(bestModels.items()):
-            extractList.append(v[0])
-            bmout.write("%s\t%s\t%s\n" % (v[0], k, v[1]))
+    ExpValues = {}
+    for k,v in natsorted(bestModels.items()):
+        if len(v) < 2:
+            extractList.append(v[0][0])
+            if not v[0][0] in ExpValues:
+                ExpValues[v[0][0]] = v[0][1]
+        else:
+            sortedTranscripts = sorted(v, key=lambda tup: tup[1], reverse=True)
+            ExpThreshold = sortedTranscripts[0][1] * float(alt_transcripts)
+            for hit in sortedTranscripts:
+                if hit[1] >= ExpThreshold:
+                    extractList.append(hit[0])
+                    if not hit[0] in ExpValues:
+                        ExpValues[hit[0]] = hit[1]
+    #now go through the PASA GFF file and generate filtered GFF3 file composed of extractList
     extractList = set(extractList)
     with open(outfile, 'w') as output:
         output.write("##gff-version 3\n")
@@ -724,7 +926,7 @@ def getBestModel(input, fasta, abundances, outfile):
             for line in gff:
                 if line.startswith("#") or line.startswith('\n'):
                     continue
-                line = line.replace('\n', '')
+                line = line.rstrip()
                 cols = line.split('\t')
                 gffID = cols[8].split(';Parent')[0].replace('ID=', '')
                 if 'gene' in cols[2]:
@@ -734,148 +936,147 @@ def getBestModel(input, fasta, abundances, outfile):
                         geneID = cols[8].split(';Name=')[0]
                         geneID = 'ID='+ geneID.split(';Parent=')[-1]
                         mRNAID = cols[8].split(';Name=')[0]
-                        output.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' % (cols[0], 'PASA', 'gene', cols[3], cols[4], cols[5], cols[6], cols[7], geneID))
-                        output.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' % (cols[0], 'PASA', cols[2], cols[3], cols[4], cols[5], cols[6], cols[7], mRNAID))
+                        expression = ExpValues.get(gffID)
+                        output.write('{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:};\n'.format(cols[0], 'PASA', 'gene', cols[3], cols[4], cols[5], cols[6], cols[7], geneID))
+                        output.write('{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:};Note=TPM:{:0.2f};\n'.format(cols[0], 'PASA', cols[2], cols[3], cols[4], cols[5], cols[6], cols[7], mRNAID, expression))
                 elif '_prime_UTR' in cols[2]:
                     utrID = gffID.split('.utr')[0]
                     if utrID in extractList:
-                        output.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' % (cols[0], 'PASA', cols[2], cols[3], cols[4], cols[5], cols[6], cols[7], cols[8]))
+                        output.write('{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:};\n'.format(cols[0], 'PASA', cols[2], cols[3], cols[4], cols[5], cols[6], cols[7], cols[8]))
                 elif 'exon' in cols[2]:
                     exonID = gffID.split('.exon')[0]
                     if exonID in extractList:
-                        output.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' % (cols[0], 'PASA', cols[2], cols[3], cols[4], cols[5], cols[6], cols[7], cols[8]))
+                        output.write('{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:};\n'.format(cols[0], 'PASA', cols[2], cols[3], cols[4], cols[5], cols[6], cols[7], cols[8]))
                 elif 'CDS' in cols[2]:
                     cdsID = gffID.split('cds.')[-1]
                     if cdsID in extractList:
-                        output.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' % (cols[0], 'PASA', cols[2], cols[3], cols[4], cols[5], cols[6], cols[7], cols[8]))
-    count = lib.countGFFgenes(outfile)
-    lib.log.info("Wrote {:,} gene models to {:}".format(count, outfile))
-
-def GFF2tblCombined(evm, genome, trnascan, proteins, prefix, genenumber, justify, SeqCenter, SeqRefNum, tblout):
+                        output.write('{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:};\n'.format(cols[0], 'PASA', cols[2], cols[3], cols[4], cols[5], cols[6], cols[7], cols[8]))
+    lib.log.info('Wrote {:,} transcripts derived from {:,} protein coding loci.'.format(len(extractList),len(bestModels)))     
+                         
+def GFF2tblCombinedNEW(evm, genome, trnascan, prefix, genenumber, justify, SeqCenter, SeqRefNum, tblout):
     from collections import OrderedDict
+    from Bio.Seq import Seq
+    from Bio.Alphabet import IUPAC
     '''
-    function to take GFF3 annotation to produce a GBK tbl file.
+    function to take GFF3 annotation to produce a GBK tbl file, support multiple transcripts per locus.
     '''
     def _sortDict(d):
-        return (d[1]['contig'], d[1]['start'])
+        return (d[1]['contig'], d[1]['location'][0])
+    #make sure genenumber is integer 
     genenumber = int(genenumber)
+    
     #generate genome length dictionary used for feature tbl generation
     scaffLen = {}
     with open(genome, 'rU') as fastain:
         for record in SeqIO.parse(fastain, 'fasta'):
             if not record.id in scaffLen:
                 scaffLen[record.id] = len(record.seq)
-    #generate protein start/stop data
-    Proteins = {}
-    with open(proteins, 'rU') as prots:
-        for record in SeqIO.parse(prots, 'fasta'):
-            ID = record.description.split(' ')[1]
-            start, stop = (True,)*2
-            Seq = str(record.seq)
-            if not Seq.endswith('*'):
-                stop = False
-            if not Seq.startswith('M'):
-                start = False
-            if not ID in Proteins:
-                Proteins[ID] = {'start': start, 'stop': stop}    
+    #setup interlap database for genes on each chromosome and load EVM models into dictionary
+    gene_inter = defaultdict(InterLap)
     Genes = {}
-    idParent = {}
-    with open(evm, 'rU') as infile:
-        for line in infile:
-            if line.startswith('\n') or line.startswith('#'):
-                continue
-            line = line.rstrip()
-            contig, source, feature, start, end, score, strand, phase, attributes = line.split('\t')
-            start = int(start)
-            end = int(end)
-            if feature == 'gene':
-                ID = attributes.split(';')[0].replace('ID=', '')
-                if not ID in Genes:
-                    Genes[ID] = {'type': 'mRNA', 'contig': contig, 'source': source, 'start': start, 'end': end, 'strand': strand, 'mRNA': [], 'CDS': [], 'proper_start': Proteins[ID]['start'], 'proper_stop': Proteins[ID]['stop'], 'phase': [], 'product': 'hypothetical protein', 'note': '' }
-                else:
-                    print("Duplicate Gene IDs found, %s" % ID)
-            else: #meaning needs to append to a gene ID
-                info = attributes.split(';')
-                ID,Parent = (None,)*2
-                for x in info:
-                    if x.startswith('ID='):
-                        ID = x.replace('ID=', '')
-                    if x.startswith('Parent='):
-                        Parent = x.replace('Parent=', '')
-                if not ID or not Parent:
-                    print("Error, can't find ID or Parent. Malformed GFF file.")
-                    sys.exit(1)
-                if feature == 'mRNA':
-                    if not ID in idParent:
-                        idParent[ID] = Parent
-                elif feature == 'exon':
-                    if Parent in idParent:
-                        geneName = idParent.get(Parent)
-                    if geneName in Genes:
-                        Genes[geneName]['mRNA'].append((start, end))
-                elif feature == 'CDS':
-                    if Parent in idParent:
-                        geneName = idParent.get(Parent)
-                    if geneName in Genes:
-                        Genes[geneName]['CDS'].append((start, end))
-                        Genes[geneName]['phase'].append(phase)
+    gene_inter, Genes = lib.gff2interlapDict(evm, gene_inter, Genes)
     #now load tRNA predictions
-    with open(trnascan, 'rU') as trnain:
-        for line in trnain:
-            line = line.rstrip()
-            contig, source, feature, start, end, score, strand, phase, attributes = line.split('\t')
-            start = int(start)
-            end = int(end)
-            if feature == 'gene':
-                ID = attributes.split(';')[0].replace('ID=', '')
-                if not ID in Genes:
-                    Genes[ID] = {'type':'tRNA', 'contig': contig, 'source': source, 'start': start, 'end': end, 'strand': strand, 'mRNA': [], 'CDS': [], 'proper_start': False, 'proper_stop': False, 'phase': [], 'product': '', 'note': ''  }
-            elif feature == 'tRNA':
-                info = attributes.split(';')
-                ID = info[0].replace('ID=', '')
-                Parent = info[1].replace('Parent=', '')
-                Product = info[2].replace('product=', '')
-                Genes[Parent]['product'] = Product
-            elif feature == 'exon':
-                ID = info[0].replace('ID=', '')
-                Parent = info[1].replace('Parent=', '')
-                if Parent in Genes:
-                    Genes[Parent]['mRNA'].append((start, end))
-                    Genes[Parent]['CDS'].append((start, end))
-                    Genes[Parent]['phase'].append('0')
-
+    gene_inter, Genes = lib.gff2interlapDict(trnascan, gene_inter, Genes)
     #now sort dictionary by contig and location, rename using prefix
     sGenes = sorted(Genes.iteritems(), key=_sortDict)
     sortedGenes = OrderedDict(sGenes)
     renamedGenes = {}
     scaff2genes = {}
+    SeqRecords = SeqIO.to_dict(SeqIO.parse(genome, 'fasta'))
+    inter = defaultdict(InterLap)
+    skipList = []
+    dropped = 0
+    keeper = 0
+    tooShort = 0
+    internalStop = 0
+    lib.log.info("Validating gene models (renaming, checking translations, filtering, etc)")
     for k,v in sortedGenes.items():
+        GoodModel = True
+        #check if gene model completely contained inside another one on same strand
+        if args.alt_transcripts == '1':
+            loc = sorted([v['location'][0],v['location'][1]])
+            if loc in gene_inter[v['contig']]:
+                for hit in list(gene_inter[v['contig']].find(loc)):
+                    if hit[3] != k and hit[2] == v['strand']:  #same strand but diff gene
+                        sortedhit = sorted([hit[0],hit[1]])
+                        if loc[0] >= sortedhit[0] and loc[1] <= sortedhit[1]: #then this gene is fully contained, skip it
+                            #if two gene models have exact same start stop they will both be removed, not really what I want, so run check
+                            if loc[0] == sortedhit[0] and loc[1] == sortedhit[1]: #exact same, then choose which has higher TPM
+                                if k in ExpressionValues and hit[3] in ExpressionValues:
+                                    currExp = ExpressionValues.get(k)
+                                    oldExp = ExpressionValues.get(hit[3])
+                                    if currExp < oldExp:
+                                        GoodModel = False
+                                    else:
+                                        skipList.append(hit[3])
+                            else:
+                                GoodModel = False
+        if not GoodModel:
+            dropped += 1
+            continue
+        #rename gene locus here
+        keeper += 1  
         #renaming scheme, leave if startswith locustag
         if k.startswith('novel_gene') or k.startswith('temp_gene') or k.startswith('split_gene'):
             genenumber += 1
-            locusTag = prefix+'_'+str(genenumber).zfill(justify)            
+            locusTag = prefix+str(genenumber).zfill(justify)            
         elif k.startswith(prefix) and '_'+prefix in k: #means models were merged
             locusTag = k.split('_'+prefix)[0]
         else:
-            locusTag = k
-        #get orientation and order exons/CDS
-        if v['strand'] == '+':
-            sortedExons = sorted(v['mRNA'], key=lambda tup: tup[0])
-            sortedCDS = sorted(v['CDS'], key=lambda tup: tup[0])
-        else:
-            sortedExons = sorted(v['mRNA'], key=lambda tup: tup[0], reverse=True)
-            sortedCDS = sorted(v['CDS'], key=lambda tup: tup[0], reverse=True)
-        #get the codon_start by getting first CDS phase + 1
-        indexStart = [x for x, y in enumerate(v['CDS']) if y[0] == sortedCDS[0][0]]
-        codon_start = int(v['phase'][indexStart[0]]) + 1
-        v['mRNA'] = sortedExons
-        v['CDS'] = sortedCDS
-        renamedGenes[locusTag] = v
-        renamedGenes[locusTag]['codon_start'] = codon_start
-        if not v['contig'] in scaff2genes:
-            scaff2genes[v['contig']] = [locusTag]
-        else:
-            scaff2genes[v['contig']].append(locusTag)
+            locusTag = k   
+        #translate to protein space, drop if less than minimum
+        #translate to protein sequence, construct cDNA Seq object, translate
+        #if passes then add to final output dictionary
+        for i in range(0,len(v['ids'])):
+            protSeq = None
+            if v['type'] == 'mRNA': #get transcript for valid models
+                cdsSeq = lib.getSeqRegions(SeqRecords, v['contig'], v['CDS'][i])
+                protSeq = lib.translate(cdsSeq, v['strand'], v['codon_start'][i]-1)
+                v['protein'].append(protSeq)
+            if protSeq and len(protSeq) - 1 < 50:
+                tooShort += 1
+                continue
+            if protSeq and '*' in protSeq[:-1]:
+                internalStop += 1
+                continue
+            if protSeq:
+                if protSeq.endswith('*'):
+                    v['partialStop'][i] = False
+                else: #try to extend the CDS up to 20 codons to see if you can find valid stop codon
+                    '''
+                    result, newCoords = lib.extend2stop(SeqRecords, v['contig'], v['CDS'][i], v['strand'], v['codon_start'][i]-1, len(protSeq))
+                    if result == True:
+                        print k, v
+                        v['partialStop'][i] = False
+                        v['CDS'][i] = newCoords
+                        #update the location and mRNA if necessary
+                        if v['strand'] == '+':
+                            if newCoords[-1][1] > v['mRNA'][i][-1][1]:
+                                v['mRNA'][i][-1] = (v['mRNA'][i][-1][0], newCoords[-1][1])
+                            if newCoords[-1][1] > v['location'][1]:
+                                v['location'] = (v['location'][0], newCoords[-1][1])
+                        else:
+                            if newCoords[-1][0] < v['mRNA'][i][-1][0]:
+                                v['mRNA'][i][-1] = (newCoords[-1][0], v['mRNA'][i][-1][1])
+                            if newCoords[-1][0] < v['location'][0]:
+                                v['location'] = (newCoords[-1][0], v['location'][1])
+                        print v
+                    else:
+                        v['partialStop'][i] = True
+                    '''
+                    v['partialStop'][i] = True
+                if v['codon_start'][i] == 1 and v['protein'][i].startswith('M'):
+                    v['partialStart'][i] = False
+                else:
+                    v['partialStart'][i] = True
+        if not locusTag in renamedGenes:
+            renamedGenes[locusTag] = v
+            if not v['contig'] in scaff2genes:
+                scaff2genes[v['contig']] = [locusTag]
+            else:
+                scaff2genes[v['contig']].append(locusTag)
+
+    lib.log.info('Writing {:,} loci to TBL format: dropped {:,} overlapping, {:,} too short, and {:,} frameshift gene models'.format(len(renamedGenes),dropped,tooShort,internalStop))
     #now have scaffolds dict and gene dict, loop through scaff dict printing tbl
     with open(tblout, 'w') as tbl:
         for k,v in natsorted(scaff2genes.items()):
@@ -883,262 +1084,480 @@ def GFF2tblCombined(evm, genome, trnascan, proteins, prefix, genenumber, justify
             tbl.write('1\t%s\tREFERENCE\n' % scaffLen.get(k))
             tbl.write('\t\t\t%s\t%s\n' % (SeqCenter, SeqRefNum))
             for genes in v: #now loop through each gene on the scaffold
-                geneInfo = renamedGenes.get(genes)
-                if geneInfo['type'] == 'mRNA':
-                    #check for partial models
-                    if geneInfo['proper_start'] and geneInfo['codon_start'] == 1:
-                        partialStart = ''
-                    else:
-                        partialStart = '<'
-                    if geneInfo['proper_stop']:
-                        partialStop = ''
-                    else:
-                        partialStop = '>'
-                    if geneInfo['strand'] == '+':
-                        tbl.write('%s%i\t%s%i\tgene\n' % (partialStart, geneInfo['start'], partialStop, geneInfo['end']))
-                        tbl.write('\t\t\tlocus_tag\t%s\n' % genes)
-                        for num, exon in enumerate(geneInfo['mRNA']):
-                            if num == 0 and num == len(geneInfo['mRNA']) - 1: #single exon, so slightly differnt method
-                                tbl.write('%s%s\t%s%s\tmRNA\n' % (partialStart, exon[0], partialStop, exon[1]))
-                            elif num == 0:
-                                tbl.write('%s%s\t%s\tmRNA\n' % (partialStart, exon[0], exon[1]))
-                            elif num == len(geneInfo['mRNA']) - 1: #this is last one
-                                tbl.write('%s\t%s%s\n' % (exon[0], partialStop, exon[1]))
+                if genes in skipList:
+                    continue
+                geneInfo = renamedGenes.get(genes) #single funannotate standard dictionary
+                #check for partial models
+                if True in geneInfo['partialStart']:
+                    ps = '<'
+                else:
+                    ps = ''
+                if True in geneInfo['partialStop']:
+                    pss = '>'
+                else:
+                    pss = ''
+                if geneInfo['type'] == 'rRNA':
+                    ps = '<'
+                    pss = '>'              
+                #now write gene model
+                if geneInfo['strand'] == '+':
+                    tbl.write('%s%i\t%s%i\tgene\n' % (ps, geneInfo['location'][0], pss, geneInfo['location'][1]))
+                    tbl.write('\t\t\tlocus_tag\t%s\n' % genes)
+                else:
+                    tbl.write('%s%i\t%s%i\tgene\n' % (ps, geneInfo['location'][1], pss, geneInfo['location'][0]))
+                    tbl.write('\t\t\tlocus_tag\t%s\n' % genes)                                 
+                #now will output the gene models with -T1, -T2, -T3 annotations based on expression values
+                #means need to get the order
+                order = []
+                if len(geneInfo['ids']) > 1: #multiple transcripts, so get order of highest TPM
+                    tpms = []
+                    for num,tpm in enumerate(geneInfo['note']):
+                        for item in tpm:
+                            if item.startswith('TPM:'):
+                                value = float(item.split(':')[-1])
+                                tpms.append((value,num))
+                    for x in sorted(tpms, reverse=True):
+                        order.append(x[1])  
+                else:
+                    order.append(0)
+                for i in order: #now write mRNA and CDS features
+                    if geneInfo['type'] == 'mRNA':
+                        if geneInfo['strand'] == '+':
+                            if geneInfo['partialStart'][i] == False:
+                                ps = ''
                             else:
-                                tbl.write('%s\t%s\n' % (exon[0], exon[1]))
-                        tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'])
-                        tbl.write('\t\t\ttranscript_id\tgnl|ncbi|%s-T1_mrna\n' % genes)
-                        for num, cds in enumerate(geneInfo['CDS']):
-                            if num == 0 and num == len(geneInfo['CDS']) - 1: #single exon, so slightly differnt method
-                                tbl.write('%s%s\t%s%s\tCDS\n' % (partialStart, cds[0], partialStop, cds[1]))
-                            elif num == 0:
-                                tbl.write('%s%s\t%s\tCDS\n' % (partialStart, cds[0], cds[1]))
-                            elif num == len(geneInfo['CDS']) - 1: #this is last one
-                                tbl.write('%s\t%s%s\n' % (cds[0], partialStop, cds[1]))
+                                ps = '<'
+                            if geneInfo['partialStop'][i] == False:
+                                pss = ''
                             else:
-                                tbl.write('%s\t%s\n' % (cds[0], cds[1]))
-                        tbl.write('\t\t\tcodon_start\t%i\n' % geneInfo['codon_start'])
-                        tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'])
-                        tbl.write('\t\t\tprotein_id\tgnl|ncbi|%s-T1\n' % genes)                                      
-                    else:
-                        tbl.write('%s%i\t%s%i\tgene\n' % (partialStart, geneInfo['end'], partialStop, geneInfo['start']))
-                        tbl.write('\t\t\tlocus_tag\t%s\n' % genes)
-                        for num, exon in enumerate(geneInfo['mRNA']):
-                            if num == 0 and num == len(geneInfo['mRNA']) - 1: #single exon, so slightly differnt method
-                                tbl.write('%s%s\t%s%s\tmRNA\n' % (partialStart, exon[1], partialStop, exon[0]))
-                            elif num == 0:
-                                tbl.write('%s%s\t%s\tmRNA\n' % (partialStart, exon[1], exon[0]))
-                            elif num == len(geneInfo['mRNA']) - 1: #this is last one
-                                tbl.write('%s\t%s%s\n' % (exon[1], partialStop, exon[0]))
+                                pss = '>'
+                            for num, exon in enumerate(geneInfo['mRNA'][i]):
+                                if num == 0 and num == len(geneInfo['mRNA'][i]) - 1: #single exon, so slightly differnt method
+                                    tbl.write('%s%s\t%s%s\tmRNA\n' % (ps, exon[0], pss, exon[1]))
+                                elif num == 0:
+                                    tbl.write('%s%s\t%s\tmRNA\n' % (ps, exon[0], exon[1]))
+                                elif num == len(geneInfo['mRNA'][i]) - 1: #this is last one
+                                    tbl.write('%s\t%s%s\n' % (exon[0], pss, exon[1]))
+                                else:
+                                    tbl.write('%s\t%s\n' % (exon[0], exon[1]))
+                            tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'][i])
+                            tbl.write('\t\t\ttranscript_id\tgnl|ncbi|%s-T%i_mrna\n' % (genes,i+1))
+                            tbl.write('\t\t\tprotein_id\tgnl|ncbi|%s-T%i\n' % (genes,i+1))
+                            for num, cds in enumerate(geneInfo['CDS'][i]):
+                                if num == 0 and num == len(geneInfo['CDS'][i]) - 1: #single exon, so slightly differnt method
+                                    tbl.write('%s%s\t%s%s\tCDS\n' % (ps, cds[0], pss, cds[1]))
+                                elif num == 0:
+                                    tbl.write('%s%s\t%s\tCDS\n' % (ps, cds[0], cds[1]))
+                                elif num == len(geneInfo['CDS'][i]) - 1: #this is last one
+                                    tbl.write('%s\t%s%s\n' % (cds[0], pss, cds[1]))
+                                else:
+                                    tbl.write('%s\t%s\n' % (cds[0], cds[1]))
+                            tbl.write('\t\t\tcodon_start\t%i\n' % geneInfo['codon_start'][i])
+                            tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'][i])
+                            tbl.write('\t\t\ttranscript_id\tgnl|ncbi|%s-T%i_mrna\n' % (genes,i+1))
+                            tbl.write('\t\t\tprotein_id\tgnl|ncbi|%s-T%i\n' % (genes,i+1))                                 
+                        else: #means this is on crick strand
+                            if geneInfo['partialStart'][i] == False:
+                                ps = ''
                             else:
-                                tbl.write('%s\t%s\n' % (exon[1], exon[0]))                 
-                        tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'])
-                        tbl.write('\t\t\ttranscript_id\tgnl|ncbi|%s-T1_mrna\n' % genes)
-                        for num, cds in enumerate(geneInfo['CDS']):
-                            if num == 0 and num == len(geneInfo['CDS']) - 1: #single exon, so slightly differnt method
-                                tbl.write('%s%s\t%s%s\tCDS\n' % (partialStart, cds[1], partialStop, cds[0]))
-                            elif num == 0:
-                                tbl.write('%s%s\t%s\tCDS\n' % (partialStart, cds[1], cds[0]))
-                            elif num == len(geneInfo['CDS']) - 1: #this is last one
-                                tbl.write('%s\t%s%s\n' % (cds[1], partialStop, cds[0]))
+                                ps = '<'
+                            if geneInfo['partialStop'][i] == False:
+                                pss = ''
                             else:
-                                tbl.write('%s\t%s\n' % (cds[1], cds[0]))
-                        tbl.write('\t\t\tcodon_start\t%i\n' % geneInfo['codon_start'])
-                        tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'])
-                        tbl.write('\t\t\tprotein_id\tgnl|ncbi|%s-T1\n' % genes)
-                elif geneInfo['type'] == 'tRNA':
-                    if geneInfo['strand'] == '+':
-                        tbl.write('<%i\t>%i\tgene\n' % (geneInfo['start'], geneInfo['end']))
-                        tbl.write('\t\t\tlocus_tag\t%s\n' % genes)
-                        for num, exon in enumerate(geneInfo['mRNA']):
-                            if num == 0:
-                                tbl.write('<%s\t>%s\ttRNA\n' % (exon[0], exon[1]))
-                            else:
-                                tbl.write('%s\t%s\n' % (exon[0], exon[1]))
-                        tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'])
-                        if geneInfo['product'] == 'tRNA-Xxx':
-                            tbl.write('\t\t\tpseudo\n')
-                        if geneInfo['note'] != '':
-                            tbl.write('\t\t\tnote\t%s\n' % geneInfo['note'])                                    
-                    else:
-                        tbl.write('<%i\t>%i\tgene\n' % (geneInfo['end'], geneInfo['start']))
-                        tbl.write('\t\t\tlocus_tag\t%s\n' % genes)
-                        for num, exon in enumerate(geneInfo['mRNA']):
-                            if num == 0:
-                                tbl.write('<%s\t>%s\ttRNA\n' % (exon[1], exon[0]))
-                            else:
-                                tbl.write('%s\t%s\n' % (exon[1], exon[0]))
-                        tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'])
-                        if geneInfo['product'] == 'tRNA-Xxx':
-                            tbl.write('\t\t\tpseudo\n')
-                        if geneInfo['note'] != '':
-                            tbl.write('\t\t\tnote\t%s\n' % geneInfo['note']) 
+                                pss = '>'               
+                            for num, exon in enumerate(geneInfo['mRNA'][i]):
+                                if num == 0 and num == len(geneInfo['mRNA'][i]) - 1: #single exon, so slightly differnt method
+                                    tbl.write('%s%s\t%s%s\tmRNA\n' % (ps, exon[1], pss, exon[0]))
+                                elif num == 0:
+                                    tbl.write('%s%s\t%s\tmRNA\n' % (ps, exon[1], exon[0]))
+                                elif num == len(geneInfo['mRNA'][i]) - 1: #this is last one
+                                    tbl.write('%s\t%s%s\n' % (exon[1], pss, exon[0]))
+                                else:
+                                    tbl.write('%s\t%s\n' % (exon[1], exon[0]))                 
+                            tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'][i])
+                            tbl.write('\t\t\ttranscript_id\tgnl|ncbi|%s-T%i_mrna\n' % (genes,i+1))
+                            tbl.write('\t\t\tprotein_id\tgnl|ncbi|%s-T%i\n' % (genes,i+1))
+                            for num, cds in enumerate(geneInfo['CDS'][i]):
+                                if num == 0 and num == len(geneInfo['CDS'][i]) - 1: #single exon, so slightly differnt method
+                                    tbl.write('%s%s\t%s%s\tCDS\n' % (ps, cds[1], pss, cds[0]))
+                                elif num == 0:
+                                    tbl.write('%s%s\t%s\tCDS\n' % (ps, cds[1], cds[0]))
+                                elif num == (len(geneInfo['CDS'][i]) - 1): #this is last one
+                                    tbl.write('%s\t%s%s\n' % (cds[1], pss, cds[0]))
+                                else:
+                                    tbl.write('%s\t%s\n' % (cds[1], cds[0]))
+                            tbl.write('\t\t\tcodon_start\t%i\n' % geneInfo['codon_start'][i])
+                            tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'][i])
+                            tbl.write('\t\t\ttranscript_id\tgnl|ncbi|%s-T%i_mrna\n' % (genes,i+1))
+                            tbl.write('\t\t\tprotein_id\tgnl|ncbi|%s-T%i\n' % (genes,i+1))
+                    elif geneInfo['type'] == 'tRNA':
+                        if geneInfo['strand'] == '+':
+                            for num, exon in enumerate(geneInfo['mRNA'][i]):
+                                if num == 0:
+                                    tbl.write('<%s\t>%s\t%s\n' % (exon[0], exon[1], geneInfo['type']))
+                                else:
+                                    tbl.write('%s\t%s\n' % (exon[0], exon[1]))
+                            tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'][i])
+                            if geneInfo['product'] == 'tRNA-Xxx':
+                                tbl.write('\t\t\tpseudo\n')        
+                        else:
+                            for num, exon in enumerate(geneInfo['mRNA'][i]):
+                                if num == 0:
+                                    tbl.write('<%s\t>%s\t%s\n' % (exon[1], exon[0], geneInfo['type']))
+                                else:
+                                    tbl.write('%s\t%s\n' % (exon[1], exon[0]))
+                            tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'][i])
+                            if geneInfo['product'] == 'tRNA-Xxx':
+                                tbl.write('\t\t\tpseudo\n')
+                    elif geneInfo['type'] == 'rRNA':
+                        if geneInfo['strand'] == '+':
+                            tbl.write('<%s\t>%s\t%s\n' % (geneInfo['location'][0],geneInfo['location'][1], geneInfo['type']))
+                            tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'][i])   
+                        else:
+                            tbl.write('<%s\t>%s\t%s\n' % (geneInfo['location'][1],geneInfo['location'][0], geneInfo['type']))
+                            tbl.write('\t\t\tproduct\t%s\n' % geneInfo['product'][i])
 
-def getGBKmodels(input):
+def gbk2interlap(input):
     '''
-    function returns a dictionary of all gene models from a genbank file
-    dictionary structure looks like:
-    { 'gene_id': { 'contig': string,
-                 'location': (start, end),
-                   'strand': plus or minus,    
-                     'mRNA': [(exon1_start, exon1_end), (exon2_start, exon2_end)...],
-                     'CDS': [(cds1_start, cds1_end), (cds2_start, cds2_end)...],
-                 'protein' : string(translation)}}
+    function to parse GBK file, construct scaffold/gene interlap dictionary and funannotate standard annotation dictionary
     '''
-    result = {}
+    inter = defaultdict(InterLap)
+    Genes = {}
     with open(input, 'rU') as filein:
         for record in SeqIO.parse(filein, 'genbank'):
-            Contig = record.id
             for f in record.features:
-                #reset for every feature
-                ID,start,end,strand,num_parts,exons,cds,protID,transcriptID,protSeq = (None,)*10
-                if not f.type in ['gene', 'mRNA', 'tRNA', 'CDS']:
-                    continue
-                #get info from features
-                ID = f.qualifiers['locus_tag'][0]
-                start = f.location.nofuzzy_start
-                end = f.location.nofuzzy_end
-                strand = f.location.strand
-                if strand == 1:
-                    str = '+'
-                else:
-                    str = '-'
-                num_parts = len(f.location.parts)           
-                if f.type == "gene":
-                    if not ID in result:
-                        result[ID] = { 'contig': Contig, 'location': (int(start),int(end)), 'strand': str, 'mRNA': [], 'CDS': [], 'protein': protSeq, 'protein_id': protID, 'transcript_id': transcriptID }
-                    else:
-                        result[ID]['location'] = (int(start),int(end))
-                        result[ID]['strand'] = strand
-                
-                elif f.type == "mRNA" or f.type == 'tRNA':
-                    try:
-                        transcriptID = f.qualifiers['transcript_id'][0]
-                    except KeyError:
-                        transcriptID = None
-                    exonTuples = []
-                    if num_parts < 2: #only single exon
-                        exonTuples.append((int(start),int(end)))
-                    else: #more than 1 exon, so loop through
-                        for i in range(0, num_parts):
-                            ex_start = f.location.parts[i].nofuzzy_start
-                            ex_end = f.location.parts[i].nofuzzy_end
-                            exonTuples.append((int(ex_start),int(ex_end)))
-                    #now we want to sort the positions I think...
-                    sortedExons = sorted(exonTuples, key=lambda tup: tup[0])
-                    #update dictionary
-                    if not ID in result:
-                        result[ID] = { 'contig': Contig, 'location': '', 'strand': '', 'mRNA': sortedExons, 'CDS': [], 'protein': protSeq, 'protein_id': protID, 'transcript_id': transcriptID }
-                    else:
-                        result[ID]['mRNA'] = sortedExons
-                        result[ID]['transcript_id'] = transcriptID
-                
-                elif f.type == 'CDS':
-                    protSeq = f.qualifiers['translation'][0]
-                    try:
-                        protID = f.qualifiers['protein_id'][0]
-                    except KeyError:
-                        protID = None
-                    cdsTuples = []
-                    if num_parts < 2: #only single CDS
-                        cdsTuples.append((int(start),int(end)))
-                    else:
-                        for i in range(0, num_parts):
-                            ex_start = f.location.parts[i].nofuzzy_start
-                            ex_end = f.location.parts[i].nofuzzy_end
-                            cdsTuples.append((int(ex_start),int(ex_end)))
-                    sortedCDS = sorted(cdsTuples, key=lambda tup: tup[0])
-                    #update dictionary
-                    if not ID in result:
-                        result[ID] = { 'contig': Contig, 'location': '', 'strand': '', 'mRNA': [], 'CDS': sortedCDS, 'protein': protSeq, 'protein_id': protID, 'transcript_id': transcriptID }
-                    else:
-                        result[ID]['CDS'] = sortedCDS
-                        result[ID]['protein'] = protSeq
-                        result[ID]['protein_id'] = protID
-    #return the dictionary
-    return result
+                if f.type == 'gene':
+                    locusTag, ID, Parent = lib.getID(f, f.type)
+                    start = int(f.location.nofuzzy_start)
+                    end = int(f.location.nofuzzy_end)
+                    inter[record.id].add((start,end,locusTag))      
+                lib.gb_feature_add2dict(f, record, Genes)
+    return inter, Genes
 
-def compareAnnotations(old, new, output):
+def gff2interlap(input, fasta):
+    '''
+    function to parse GFF3 file, construct scaffold/gene interlap dictionary and funannotate standard annotation dictionary
+    '''
+    inter = defaultdict(InterLap)
+    Genes = {}
+    Genes = lib.gff2dict(input, fasta, Genes)
+    for k,v in natsorted(Genes.items()):
+        inter[v['contig']].add((v['location'][0],v['location'][1],k))
+    return inter, Genes
+        
+   
+def merge_dicts(x, y):
+    """Given two dicts, merge them into a new dict as a shallow copy."""
+    z = x.copy()
+    z.update(y)
+    return z
+    
+def message(loc1, loc2, cdsAED, mrnaAED, protMatches, UTRs, no_change, UTR_added, yardSale, exonChange):
+    msg = []
+    if not cdsAED or cdsAED == '':
+        cds = 0
+    else:
+        cds = float(cdsAED)
+    mrna = float(mrnaAED)
+    pos = loc1 == loc2
+    #structured message, coordinates, 5prime, 3prime, exon, cds, pident
+    if not pos: #coordinates changed
+        msg.append('gene coordinates updated')
+        for u in UTRs:
+            if u[0]:
+                if not any('5prime' in x for x in msg):
+                    msg.append('5prime UTR added')
+            if u[1]:
+                if not any('3prime' in x for x in msg):
+                    msg.append('3prime UTR added')
+    if mrna > 0:
+        msg.append('mRNA updated')
+    if cds > 0:
+        pidentmsg = []
+        for x in protMatches:
+            pidentmsg.append('{0:.0f}%'.format(x))
+        msg.append('CDS update [translation pident: %s]' % ', '.join(pidentmsg))
+    #now work on the counter
+    if len(msg) < 1:
+        msg = ['no change']
+        no_change += 1
+    elif any('UTR' in x for x in msg):
+        UTR_added += 1
+    elif any('mRNA' in x for x in msg):
+        exonChange += 1
+    else:
+        yardSale += 1
+    final_message = ';'.join(msg)
+    return final_message, no_change, UTR_added, yardSale, exonChange
+  
+def pairwiseAlign(query, ref):
+    from Bio import pairwise2
+    '''
+    do global alignment and return pident
+    '''
+    if query == ref:
+        return 100.0
+    align = pairwise2.align.globalxx(query, ref)
+    length = max(len(query), len(ref))
+    pident = (align[0][2] / float(length)) * 100
+    return pident
+
+def compareAnnotations2(old, new, output):
     '''
     function takes two GenBank annotated genomes and compares gene models
     output is a tsv file for each locus and a description of what is different
+    can handle multiple transcripts per locus
     '''
     result = {}
-    dropped = 0
-    added = 0
-    no_change = 0
-    UTR_added = 0
-    yardSale = 0
-    exonChange = 0
-    modelChangeNotProt = 0
+    global no_change, UTR_added, yardSale, exonChange, modelChangeNotProt, dropped, added, total_transcripts, total_genes
+    no_change, UTR_added, yardSale, exonChange, modelChangeNotProt, dropped, added, total_transcripts, total_genes = (0,)*9
     lib.log.info("Parsing GenBank files...comparing annotation")
-    oldAnnotation = getGBKmodels(old)
-    newAnnotation = getGBKmodels(new)
+    if args.gff and args.fasta:
+        oldInter, oldGenes = gff2interlap(old, args.fasta)
+    else:
+        oldInter, oldGenes = gbk2interlap(old)
+    newInter, newGenes = gbk2interlap(new)
     #do the simple stuff first, find models that were deleted
-    for key,value in oldAnnotation.items():
-        if not key in newAnnotation:
-            result[key] = [value['contig'], value['location'], value['strand'], value['mRNA'], value['CDS'], value['protein'], value['protein_id'], value['transcript_id'], 'gene model removed']
-            dropped += 1
-    #now look for new ones as well as do comparison of gene models
-    for key,newModel in newAnnotation.items():
-        if not key in oldAnnotation:
-            result[key] = [newModel['contig'], newModel['location'], newModel['strand'], newModel['mRNA'], newModel['CDS'], newModel['protein'], '', '', 'new gene model']
-            added += 1
-        else: #now look to see how its changed
-            oldModel = oldAnnotation.get(key) #returns dictionary
-            #run comparisons of the data
-            contigs = oldModel['contig'] == newModel['contig']
-            location = oldModel['location'] == newModel['location']
-            strand = oldModel['strand'] == newModel['strand']
-            mRNA = oldModel['mRNA'] == newModel['mRNA']
-            CDS = oldModel['CDS'] == newModel['CDS']
-            protein = oldModel['protein'] == newModel['protein']
-            compare = [contigs, location, strand, mRNA, CDS, protein]
-            if compare == [True,True,True,True,True,True]:
-                result[key] = [newModel['contig'], newModel['location'], newModel['strand'], newModel['mRNA'], newModel['CDS'], newModel['protein'], oldModel['protein_id'], oldModel['transcript_id'], 'gene model has not changed']
-                no_change += 1
-            elif compare == [True,False,True,False,True,True]:
-                result[key] = [newModel['contig'], newModel['location'], newModel['strand'], newModel['mRNA'], newModel['CDS'], newModel['protein'], oldModel['protein_id'], oldModel['transcript_id'], 'gene coordinates changed; UTR has been added to gene model; CDS unchanged; translation unchanged']
-                UTR_added += 1
-            elif compare == [True,False,True,False,False,False]:
-                result[key] = [newModel['contig'], newModel['location'], newModel['strand'], newModel['mRNA'], newModel['CDS'], newModel['protein'], oldModel['protein_id'], oldModel['transcript_id'], 'gene coordinates changed; mRNA and CDS has changed; translation changed']
-                yardSale += 1
-            elif compare == [True,True,True,False,False,False]:
-                result[key] = [newModel['contig'], newModel['location'], newModel['strand'], newModel['mRNA'], newModel['CDS'], newModel['protein'], oldModel['protein_id'], oldModel['transcript_id'], 'gene coordinates unchanged; mRNA and CDS has changed; translation changed']
-                exonChange += 1
-            elif compare == [True, False, True, False, False, True]:
-                result[key] = [newModel['contig'], newModel['location'], newModel['strand'], newModel['mRNA'], newModel['CDS'], newModel['protein'], oldModel['protein_id'], oldModel['transcript_id'], 'gene coordinates changed; mRNA and CDS has changed; translation unchanged']
-                modelChangeNotProt += 1
-                
+    for contig in oldInter:
+        for gene in oldInter[contig]:
+            if not gene in newInter[contig]: #these models are removed
+                dropped += 1
+                if not gene[2] in oldGenes:
+                    continue
+                #populate output dictionary with results
+                if not gene[2] in result:
+                    #dropped model has AED of 1.000
+                    cdsAED = '1.000'
+                    exonAED = '1.000'
+                    result[gene[2]] = {'contig': oldGenes[gene[2]]['contig'], 'old_num_transcripts': len(oldGenes[gene[2]]['ids']), 
+                                'old_location': oldGenes[gene[2]]['location'], 'num_transcripts': len(oldGenes[gene[2]]['ids']), 'strand': oldGenes[gene[2]]['strand'], 
+                                'mRNA': oldGenes[gene[2]]['mRNA'], 'location': oldGenes[gene[2]]['location'], 'CDS': oldGenes[gene[2]]['CDS'], 'message': 'gene model removed', 
+                                'cdsAED': cdsAED, 'exonAED': exonAED, 'transcript_id': oldGenes[gene[2]]['ids'], 'pident': [],
+                                'protein_id':oldGenes[gene[2]]['ids'], 'seq': oldGenes[gene[2]]['protein']}
+
+    #now go through the updated annotation, comparing to old annot
+    for contig in newInter:
+        for gene in newInter[contig]:
+            if not gene in oldInter[contig]: #means this is a new model, so add it
+                added += 1
+                total_genes += 1
+                if not gene[2] in newGenes:
+                    continue
+                total_transcripts += len(newGenes[gene[2]]['ids'])
+                if not gene[2] in result:
+                    result[gene[2]] = {'contig': newGenes[gene[2]]['contig'], 'old_num_transcripts': 0, 
+                                'old_location': newGenes[gene[2]]['location'], 'num_transcripts': len(newGenes[gene[2]]['ids']), 'strand': newGenes[gene[2]]['strand'], 
+                                'mRNA': newGenes[gene[2]]['mRNA'], 'location': newGenes[gene[2]]['location'], 'CDS': newGenes[gene[2]]['CDS'], 'message': 'new gene model', 
+                                'cdsAED': '0.000', 'exonAED': '0.000', 'transcript_id': newGenes[gene[2]]['ids'], 
+                                'protein_id':newGenes[gene[2]]['ids'], 'seq': newGenes[gene[2]]['protein'], 'pident': []}
+            else: #means this is existing model, and need to do some comparisons
+                hitList = list(oldInter[contig].find(gene))
+                #there might be some overlapping transcripts, so enforce locus name
+                hit = None
+                for z in hitList:
+                    if gene[2] == z[2]:
+                        hit = z
+                if not hit:
+                    #there is no real hit, so this a new gene
+                    total_transcripts += len(newGenes[gene[2]]['ids'])
+                    added += 1
+                    total_genes += 1
+                    if not gene[2] in result:
+                        result[gene[2]] = {'contig': newGenes[gene[2]]['contig'], 'old_num_transcripts': 0, 
+                                    'old_location': newGenes[gene[2]]['location'], 'num_transcripts': len(newGenes[gene[2]]['ids']), 'strand': newGenes[gene[2]]['strand'], 
+                                    'mRNA': newGenes[gene[2]]['mRNA'], 'location': newGenes[gene[2]]['location'], 'CDS': newGenes[gene[2]]['CDS'], 'message': 'new gene model', 
+                                    'cdsAED': '0.000', 'exonAED': '0.000', 'transcript_id': newGenes[gene[2]]['ids'], 
+                                    'protein_id':newGenes[gene[2]]['ids'], 'seq': newGenes[gene[2]]['protein'], 'pident': []}
+                else:
+                    #since we may have multiple transcripts from hit as well as new annotation we need to be aware of that
+                    #also, tRNA annotations do not exist in Proteins dictionary, so process them differently
+                    #get the reference hits, pull out CDS and mRNA for pairwiseAED calculation
+                    total_genes += 1
+                    total_transcripts += len(newGenes[gene[2]]['ids'])
+                    
+                    #get the old annotation
+                    hitInfo = oldGenes.get(gene[2])
+                    
+                    #calculate AED
+                    exonAED = pairwiseAED(newGenes[gene[2]]['mRNA'], hitInfo['mRNA'])
+                    if newGenes[gene[2]]['type'] == 'mRNA' and hitInfo['type'] == 'mRNA':
+                        cdsAED = pairwiseAED(newGenes[gene[2]]['CDS'], hitInfo['CDS'])
+                    else:
+                        cdsAED = '0.000'
+                    
+                    #check translation, to deal with multiple transcripts, lets loop through new
+                    protMatches = []
+                    if newGenes[gene[2]]['type'] == 'mRNA' and hitInfo['type'] == 'mRNA':
+                        for i in range(0,len(newGenes[gene[2]]['ids'])):
+                            protMatch = None
+                            for y in range(0,len(oldGenes[gene[2]]['ids'])):
+                                pident = pairwiseAlign(newGenes[gene[2]]['protein'][i], oldGenes[gene[2]]['protein'][y])
+                                if not protMatch:
+                                    protMatch = pident
+                                else:
+                                    if pident > protMatch:
+                                        protMatch = pident
+                            protMatches.append(protMatch)
+                    #summarize UTRs
+                    UTRs = findUTRs(newGenes[gene[2]]['CDS'], newGenes[gene[2]]['mRNA'], newGenes[gene[2]]['strand'])
+                    
+                    #structured comments/counts for gene models
+                    msg, no_change, UTR_added, yardSale, exonChange = message(newGenes[gene[2]]['location'], oldGenes[gene[2]]['location'], cdsAED, exonAED, protMatches, UTRs, no_change, UTR_added, yardSale, exonChange)
+                    
+                    if not gene[2] in result:
+                        result[gene[2]] = {'contig': newGenes[gene[2]]['contig'], 'old_num_transcripts': len(oldGenes[gene[2]]['ids']), 
+                                    'old_location': oldGenes[gene[2]]['location'], 'num_transcripts': len(newGenes[gene[2]]['ids']), 'strand': newGenes[gene[2]]['strand'], 
+                                    'mRNA': newGenes[gene[2]]['mRNA'], 'location': newGenes[gene[2]]['location'], 'CDS': newGenes[gene[2]]['CDS'], 'message': msg, 
+                                    'cdsAED': cdsAED, 'exonAED': exonAED, 'transcript_id': newGenes[gene[2]]['ids'], 
+                                    'protein_id':newGenes[gene[2]]['ids'], 'seq': newGenes[gene[2]]['protein'], 'pident': protMatches}
+         
+    total_cdsAED = []
+    total_exonAED = []               
     with open(output, 'w') as out:
-        out.write('Locus_tag\tContig:start-end\tStrand\tTranscript_ID\tLength\tNum_Exons\tProtein_ID\tProt_Length\tDescription\n')
+        out.write('Locus_tag\tOrig_Location\tOrig_Num_Transcripts\tContig:start-end\tStrand\tGene_Length\tNum_Transcripts\tmRNA_AED\tCDS_AED\tDescription\n')
         for k,v in natsorted(result.items()):
-            contig, loc, strand, exons, cds, protSeq, protID, tranID, description = v
-            try:
-                ProtLength = len(protSeq)
-            except TypeError:
-                ProtLength = 0
-            GeneLength = int(loc[1]) - int(loc[0])
-            NumExons = len(exons)
-            start = str(loc[0])
-            end = str(loc[1])
-            out.write('%s\t%s:%s-%s\t%s\t%s\t%i\t%i\t%s\t%i\t%s\n' % (k, contig, start, end, strand, tranID, GeneLength, NumExons, protID, ProtLength, description))
+            start = str(v['location'][0])
+            end = str(v['location'][1])
+            GeneLength = int(end) - int(start)
+            total_cdsAED.append(float(v['cdsAED']))
+            total_exonAED.append(float(v['exonAED']))
+            out.write('{:}\t{:}:{:}-{:}\t{:}\t{:}:{:}-{:}\t{:}\t{:}\t{:}\t{:}\t{:}\t{:}\n'.format(k, v['contig'],v['old_location'][0],v['old_location'][1],v['old_num_transcripts'],v['contig'],start,end,v['strand'],GeneLength,v['num_transcripts'],v['exonAED'],v['cdsAED'], v['message']))
+    Avg_cdsAED = sum(total_cdsAED) / float(len(total_cdsAED))
+    Avg_exonAED = sum(total_exonAED) / float(len(total_exonAED))
     #output some simple stats to cmd line
     lib.log.info("Updated annotation complete:\n\
 -------------------------------------------------------\n\
 Total Gene Models:\t{:,}\n\
+Total transcripts:\t{:,}\n\
 New Gene Models:\t{:,}\n\
-No Change in Model:\t{:,}\n\
+No Change:\t\t{:,}\n\
 Update UTRs:\t\t{:,}\n\
 Exons Changed:\t\t{:,}\n\
 Exons/CDS Changed:\t{:,}\n\
-Exon Changed/Prot same:\t{:,}\n\
 Dropped Models:\t\t{:,}\n\
--------------------------------------------------------".format(len(newAnnotation), added, no_change, UTR_added, exonChange, yardSale, modelChangeNotProt, dropped))
+CDS AED:\t\t{:.3f}\n\
+mRNA AED:\t\t{:.3f}\n\
+-------------------------------------------------------".format(total_genes, total_transcripts, added, no_change, UTR_added, exonChange, yardSale, dropped, Avg_cdsAED, Avg_exonAED))
 
+def findUTRs(cds, mrna, strand):
+    '''
+    take list of list of CDS coordiantes and compare to list of list of mRNA coordinates to
+    determine if 5 prime or 3 prime UTR exist
+    '''
+    #supporting multiple transcripts, however, they are already matched up and sorted
+    UTRs = []
+    for i in range(0, len(cds)):
+        Fiveprime = False
+        Threeprime = False
+        refInterlap = InterLap(mrna[i])
+        if strand == '+': #look at first CDS for 5 prime and last CDS for 3 prime
+            if cds[i][0] in refInterlap: #means it overlaps with mrNA (which it obviously should)
+                hit = list(refInterlap.find(cds[i][0]))[0]
+                loc = mrna[i].index(hit) #if first exon, then compare, if not first then there is 5prime UTR
+                if loc == 0:            
+                    diff = np.subtract(cds[i][0],hit) #will return array of exon minus hit at each pos
+                    if diff[0] > 0:
+                        Fiveprime = True
+                else:
+                    Fiveprime = True
+            #check for 3 prime UTR
+            if cds[i][-1] in refInterlap:
+                hit = list(refInterlap.find(cds[i][-1]))[0]
+                loc = mrna[i].index(hit)
+                if len(mrna[i]) == loc+1:
+                    diff = np.subtract(cds[i][-1],hit) #will return array of exon minus hit at each pos
+                    if diff[1] < 0:
+                        Threeprime = True
+                else:
+                    Threeprime = True
+        else:
+            if cds[i][0] in refInterlap: #means it overlaps with mrNA (which it obviously should)
+                hit = list(refInterlap.find(cds[i][0]))[0]
+                loc = mrna[i].index(hit) #if first exon, then compare, if not first then there is 5prime UTR
+                if loc == 0:       
+                    diff = np.subtract(cds[i][0],hit) #will return array of exon minus hit at each pos
+                    if diff[1] < 0:
+                        Fiveprime = True
+                else:
+                    Fiveprime = True
+            #check for 3 prime UTR
+            if cds[i][-1] in refInterlap:
+                hit = list(refInterlap.find(cds[i][-1]))[0]
+                loc = mrna[i].index(hit)
+                if len(mrna[i]) == loc+1:
+                    diff = np.subtract(cds[i][-1],hit) #will return array of exon minus hit at each pos
+                    if diff[0] > 0:
+                        Threeprime = True
+                else:
+                    Threeprime = True     
+        UTRs.append((Fiveprime,Threeprime))
+    return UTRs
+
+def pairwiseAED(query, reference):
+    '''
+    takes a multiple transcripts and sums AED from lowest pairwise comparison and then calculates
+    the average based on number of transcripts in the query
+    '''
+    AEDsum = []
+    pAED = [float(getAED(a,b)) for a, b in itertools.product(query, reference)]
+    #split into parts to get lowest AED
+    splitAED = [pAED[i:i+len(query)] for i  in range(0, len(pAED), len(query))]
+    for pair in splitAED:
+        AEDsum.append(min(pair))
+    AEDavg = sum(AEDsum) / len(query)
+    return '{:.3f}'.format(AEDavg)
+
+
+def getAED(query, reference):
+    '''
+    function to calcuate annotation edit distance between two mRNA transcript coordinates
+    AED = 1 - (SN + SP / 2)
+    SN = fraction of ref predicted
+    SP = fraction prediction overlapping the ref
+    '''
+    def _length(listTup):
+        len = 0
+        for i in listTup:
+            l = abs(i[0] - i[1])
+            len += l
+        return len
+    #check if identical
+    if query == reference:
+       return '0.000'
+    #make sure sorted
+    rLen = _length(reference)
+    refInterlap = InterLap(reference)
+    RefPred = 0
+    QueryOverlap = 0
+    qLen = 0
+    for exon in query:
+        qLen += abs(exon[0] - exon[1])
+        if exon in refInterlap: #exon overlaps at least partially with reference
+            hit = list(refInterlap.find(exon))
+            for h in hit:
+                diff = np.subtract(exon,h) #will return array of exon minus hit at each pos
+                if diff[0] <= 0 and diff[1] >= 0: #then query exon covers ref exon
+                    cov = abs(h[0] - h[1])
+                    QueryOverlap += cov
+                elif diff[0] <= 0 and diff[1] < 0: # means query partial covers ref
+                    cov = abs(h[0] - exon[1])
+                    QueryOverlap += cov
+                elif diff[0] > 0 and diff[1] >= 0: #means query partial covers ref
+                    cov = abs(exon[0] - h[1])
+                    QueryOverlap += cov        
+                elif diff[0] > 0 and diff[1] < 1:
+                    cov = abs(exon[0] - exon[1])
+                    QueryOverlap += cov
+    #calculate AED
+    SP = QueryOverlap / float(qLen)
+    SN = QueryOverlap / float(rLen)
+    AED = 1 - ((SN + SP) / 2)
+    return '{:.3f}'.format(AED)
+    
 #create folder structure
-if os.path.isdir(args.input): #then funannoate folder is passed
-    args.out = args.input
+if args.input:
+    if os.path.isdir(args.input): #then funannoate folder is passed
+        args.out = args.input
 
 if not args.out:
     lib.log.error("No output folder specified, -o, --out.")
@@ -1194,7 +1613,7 @@ if not args.TRINITYHOME:
 else:
     TRINITY = args.TRINITYHOME
         
-programs = ['fasta', 'mysql', 'gmap', 'blat', 'tbl2asn', 'hisat2', 'hisat2-build', 'kallisto', 'Trinity', 'bedtools', 'java']
+programs = ['fasta', 'gmap', 'blat', 'tbl2asn', 'hisat2', 'hisat2-build', 'kallisto', 'Trinity', 'bedtools', 'java']
 lib.CheckDependencies(programs)
 
 #take care of some preliminary checks
@@ -1204,53 +1623,6 @@ if args.sbt == 'SBT':
 else:
     SBT = args.sbt
 
-#check input, allow for passing the output directory of funannotate, otherwise must be gbk or gbff files
-#set read inputs to None, populate as you go
-s_reads, l_reads, r_reads, trim_left, trim_right, trim_single, left_norm, right_norm, single_norm, all_reads, trim_reads, norm_reads, GBK, trinity_results, pasaConfigFile = (None,)*15
-if os.path.isdir(args.input):
-    if os.path.isdir(os.path.join(args.input, 'predict_results')):
-        for file in os.listdir(os.path.join(args.input, 'predict_results')):
-            if file.endswith('.gbk'):
-                GBK = os.path.join(args.input, 'predict_results', file)
-    #now lets also check if training folder/files are present, as then can pull all the data you need for update directly
-    if os.path.isdir(os.path.join(args.input, 'training')): #then funannotate train has been run, try to get reads, trinity, PASA
-        inputDir = os.path.join(args.input, 'training')
-        if os.path.isfile(os.path.join(inputDir, 'left.fq.gz')):
-            l_reads = os.path.join(inputDir, 'left.fq.gz')
-        if os.path.isfile(os.path.join(inputDir, 'right.fq.gz')):
-            r_reads = os.path.join(inputDir, 'right.fq.gz')
-        if os.path.isfile(os.path.join(inputDir, 'single.fq.gz')):
-            s_reads = os.path.join(inputDir, 'single.fq.gz')
-        if os.path.isfile(os.path.join(inputDir, 'trimmomatic', 'trimmed_left.fastq.gz')):
-            trim_left = os.path.join(inputDir, 'trimmomatic', 'trimmed_left.fastq.gz')
-        if os.path.isfile(os.path.join(inputDir, 'trimmomatic', 'trimmed_right.fastq.gz')):
-            trim_right = os.path.join(inputDir, 'trimmomatic', 'trimmed_right.fastq.gz')
-        if os.path.isfile(os.path.join(inputDir, 'trimmomatic', 'trimmed_single.fastq.gz')):
-            trim_single = os.path.join(inputDir, 'trimmomatic', 'trimmed_single.fastq.gz')
-        if os.path.isfile(os.path.join(inputDir, 'normalize', 'left.norm.fq')):
-            left_norm = os.path.join(inputDir, 'normalize', 'left.norm.fq')
-        if os.path.isfile(os.path.join(inputDir, 'normalize', 'right.norm.fq')):
-            right_norm = os.path.join(inputDir, 'normalize', 'right.norm.fq')
-        if os.path.isfile(os.path.join(inputDir, 'normalize', 'single.norm.fq')):
-            single_norm = os.path.join(inputDir, 'normalize', 'single.norm.fq')
-        if l_reads or s_reads:
-            all_reads = (l_reads, r_reads, s_reads)
-        if trim_left or trim_single:
-            trim_reads = (trim_left, trim_right, trim_single)
-        if left_norm or single_norm:
-            norm_reads = (left_norm, right_norm, single_norm)
-        if os.path.isfile(os.path.join(inputDir, 'trinity.fasta')):
-            trinity_results = os.path.join(inputDir, 'trinity.fasta')
-        if os.path.isfile(os.path.join(inputDir, 'pasa', 'alignAssembly.txt')):
-            pasaConfigFile = os.path.join(inputDir, 'pasa', 'alignAssembly.txt')
-else:
-    GBK = args.input
-
-if not GBK:
-    lib.log.error("Error in input (-i, --input): pass either funannotate directory or GenBank file")
-    sys.exit(1)
-
-#split GenBank into parts
 #setup output files
 gffout = os.path.join(tmpdir, 'genome.gff3')
 proteinsout = os.path.join(tmpdir, 'genome.proteins.fa')
@@ -1258,9 +1630,80 @@ trnaout = os.path.join(tmpdir, 'genome.trna.gff3')
 fastaout = os.path.join(tmpdir, 'genome.fa')
 spliceout = os.path.join(tmpdir, 'genome.ss')
 exonout = os.path.join(tmpdir, 'genome.exons')
-locustag, genenumber, justify = gbk2pasa(GBK, gffout, trnaout, fastaout, spliceout, exonout, proteinsout)
-organism, strain, isolate, accession, WGS_accession, gb_gi, version = lib.getGBKinfo(GBK)
-lib.log.info("Reannotating %s, NCBI accession: %s" % (organism, WGS_accession))
+
+#check input, allow for passing the output directory of funannotate, otherwise must be gbk or gbff files
+#set read inputs to None, populate as you go
+s_reads, l_reads, r_reads, trim_left, trim_right, trim_single, left_norm, right_norm, single_norm, all_reads, trim_reads, norm_reads, GBK, trinity_results, pasaConfigFile = (None,)*15
+if args.input:
+    if os.path.isdir(args.input):
+        if os.path.isdir(os.path.join(args.input, 'predict_results')):
+            for file in os.listdir(os.path.join(args.input, 'predict_results')):
+                if file.endswith('.gbk'):
+                    GBK = os.path.join(args.input, 'predict_results', file)
+        #now lets also check if training folder/files are present, as then can pull all the data you need for update directly
+        if os.path.isdir(os.path.join(args.input, 'training')): #then funannotate train has been run, try to get reads, trinity, PASA
+            inputDir = os.path.join(args.input, 'training')
+            if os.path.isfile(os.path.join(inputDir, 'left.fq.gz')):
+                l_reads = os.path.join(inputDir, 'left.fq.gz')
+            if os.path.isfile(os.path.join(inputDir, 'right.fq.gz')):
+                r_reads = os.path.join(inputDir, 'right.fq.gz')
+            if os.path.isfile(os.path.join(inputDir, 'single.fq.gz')):
+                s_reads = os.path.join(inputDir, 'single.fq.gz')
+            if os.path.isfile(os.path.join(inputDir, 'trimmomatic', 'trimmed_left.fastq.gz')):
+                trim_left = os.path.join(inputDir, 'trimmomatic', 'trimmed_left.fastq.gz')
+            if os.path.isfile(os.path.join(inputDir, 'trimmomatic', 'trimmed_right.fastq.gz')):
+                trim_right = os.path.join(inputDir, 'trimmomatic', 'trimmed_right.fastq.gz')
+            if os.path.isfile(os.path.join(inputDir, 'trimmomatic', 'trimmed_single.fastq.gz')):
+                trim_single = os.path.join(inputDir, 'trimmomatic', 'trimmed_single.fastq.gz')
+            if os.path.isfile(os.path.join(inputDir, 'normalize', 'left.norm.fq')):
+                left_norm = os.path.join(inputDir, 'normalize', 'left.norm.fq')
+            if os.path.isfile(os.path.join(inputDir, 'normalize', 'right.norm.fq')):
+                right_norm = os.path.join(inputDir, 'normalize', 'right.norm.fq')
+            if os.path.isfile(os.path.join(inputDir, 'normalize', 'single.norm.fq')):
+                single_norm = os.path.join(inputDir, 'normalize', 'single.norm.fq')
+            if l_reads or s_reads:
+                all_reads = (l_reads, r_reads, s_reads)
+            if trim_left or trim_single:
+                trim_reads = (trim_left, trim_right, trim_single)
+            if left_norm or single_norm:
+                norm_reads = (left_norm, right_norm, single_norm)
+            if os.path.isfile(os.path.join(inputDir, 'trinity.fasta')):
+                trinity_results = os.path.join(inputDir, 'trinity.fasta')
+            if os.path.isfile(os.path.join(inputDir, 'pasa', 'alignAssembly.txt')):
+                pasaConfigFile = os.path.join(inputDir, 'pasa', 'alignAssembly.txt')
+        #let user know which files are being re-used
+        look4files = [s_reads, l_reads, r_reads, trim_left, trim_right, trim_single, left_norm, right_norm, single_norm, trinity_results, pasaConfigFile]
+        look4files_names = ['Single reads', 'Forward reads', 'Reverse reads', 'Forward Q-trimmed reads', 'Reverse Q-trimmed reads', 'Single Q-trimmed reads', 'Forward normalized reads', 'Reverse normalized reads', 'Single normalized reads', 'Trinity results', 'PASA config file']
+        files_used = []
+        for i,x in enumerate(look4files):
+            if x is not None:
+                files_used.append('\t'+look4files_names[i]+': '+x)
+        #files_used = [x for x in [s_reads, l_reads, r_reads, trim_left, trim_right, trim_single, left_norm, right_norm, single_norm, trinity_results, pasaConfigFile] if x is not None]
+        if len(files_used) > 0:
+            lib.log.info('Found relevent files in %s, will re-use them:\n%s' % (inputDir, '\n'.join(files_used)))
+    else:
+        GBK = args.input
+    #check if RefSeq --> NCBI does not want you to reannotate RefSeq genomes
+    if lib.checkRefSeq(GBK):
+        lib.log.error('%s is a NCBI RefSeq genome, to reannotate please use original submission.' % GBK)
+        sys.exit(1)
+    #split GenBank into parts
+    locustag, genenumber, justify = gbk2pasaNEW(GBK, gffout, trnaout, fastaout, spliceout, exonout, proteinsout)
+    organism, strain, isolate, accession, WGS_accession, gb_gi, version = lib.getGBKinfo(GBK)
+    lib.log.info("Reannotating %s, NCBI accession: %s" % (organism, WGS_accession))
+
+else:
+    if args.gff and args.fasta:
+        if not args.species:
+            lib.log.error("Input error: please enter a name for -s,--species")
+            sys.exit(1)
+        shutil.copyfile(args.fasta, fastaout)
+        locustag, genenumber, justify = gff2pasa(args.gff, fastaout, gffout, trnaout, spliceout, exonout)
+        organism,strain,isolate,accession,WGS_accession,gb_gi,version = (None,)*7
+    else:
+        lib.log.error("Error in input: pass either funannotate directory or GenBank file to -i,--input; or GFF3 to -g,--gff and genome FASTA to -f,--fasta.")
+        sys.exit(1)
+        
 lib.log.info("Previous annotation consists of: {:,} protein coding gene models and {:,} non-coding gene models".format(lib.countGFFgenes(gffout), lib.countGFFgenes(trnaout)))
 
 #check if organism/species/isolate passed at command line, if so, overwrite what you detected.
@@ -1382,15 +1825,19 @@ if not norm_reads:
         else:
             single_norm = trim_single
     else:
+        #check if files already exist
         #check if exists
         if not os.path.isfile(os.path.join(args.out, 'update_misc', 'normalize', 'left.norm.fq')) or not os.path.isfile(os.path.join(args.out, 'update_misc', 'normalize', 'right.norm.fq')):
-            lib.log.info("Running read normalization with Trinity")
-            left_norm, right_norm, single_norm = runNormalization(trim_reads, args.memory)
+            if trim_reads[0] and trim_reads[1]:
+                lib.log.info("Running read normalization with Trinity")
+                left_norm, right_norm, single_norm = runNormalization(trim_reads, args.memory)
+            else:
+                left_norm, right_norm = (None,)*2
         else:
             left_norm, right_norm = os.path.join(args.out, 'update_misc', 'normalize', 'left.norm.fq'), os.path.join(args.out, 'update_misc', 'normalize', 'right.norm.fq')
             if os.path.isfile(os.path.join(args.out, 'update_misc', 'normalize', 'single.norm.fq')):
                 single_norm = os.path.join(args.out, 'update_misc', 'normalize', 'single.norm.fq')
-        if not os.path.isfile(os.path.join(args.out, 'update_misc', 'normalize', 'single.norm.fq')) and not trim_left and not trim_right and trim_single:
+        if not os.path.isfile(os.path.join(args.out, 'update_misc', 'normalize', 'single.norm.fq')) and not trim_reads[0] and not trim_reads[1] and trim_single:
             lib.log.info("Running read normalization with Trinity")
             left_norm, right_norm, single_norm = runNormalization(trim_reads, args.memory)
         else:
@@ -1451,13 +1898,10 @@ if not lib.checkannotations(KallistoAbundance):
     runKallisto(PASA_gff, fastaout, trim_reads, args.stranded, args.cpus, KallistoAbundance)
 
 #parse Kallisto results with PASA GFF
+global ExpressionValues
+ExpressionValues = {}
 BestModelGFF = os.path.join(tmpdir, 'bestmodels.gff3')
-getBestModel(PASA_gff, fastaout, KallistoAbundance, BestModelGFF)
-
-#generate proteins 
-finalProts = os.path.join(tmpdir, 'final.proteins.fasta')
-cmd = [os.path.join(PASA, 'misc_utilities', 'gff3_file_to_proteins.pl'), BestModelGFF, fastaout, 'prot']
-lib.runSubprocess2(cmd, '.', lib.log, finalProts)
+getBestModels(PASA_gff, fastaout, KallistoAbundance, args.alt_transcripts, BestModelGFF)
 
 #make sure tRNA models don't overlap new gene models
 cleanTRNA = os.path.join(tmpdir, 'trna.no-overlaps.gff')
@@ -1466,11 +1910,12 @@ lib.runSubprocess2(cmd, '.', lib.log, cleanTRNA)
 
 #generate tbl file
 gagdir = os.path.join(tmpdir, 'tbl2asn')
-if os.path.isdir(gagdir):
-    shutil.rmtree(gagdir)
-os.makedirs(gagdir)
 TBLFile = os.path.join(gagdir, 'genome.tbl')
-GFF2tblCombined(BestModelGFF, fastaout, cleanTRNA, finalProts, locustag, genenumber, justify, args.SeqCenter, args.SeqAccession, TBLFile)
+if not lib.checkannotations(TBLFile):
+    if os.path.isdir(gagdir):
+        shutil.rmtree(gagdir)
+    os.makedirs(gagdir)
+    GFF2tblCombinedNEW(BestModelGFF, fastaout, cleanTRNA, locustag, genenumber, justify, args.SeqCenter, args.SeqAccession, TBLFile)
 
 #need a function here to clean up the ncbi tbl file if this is a reannotation
 #a reannotation would have a WGS_accession, if none, then it is a first pass and not from genbank
@@ -1530,7 +1975,6 @@ final_error = os.path.join(args.out, 'update_results', organism_name+'.error.sum
 final_fixes = os.path.join(args.out, 'update_results', organism_name+'.models-need-fixing.txt')
 
 #retrieve files/reorganize
-#shutil.copyfile(os.path.join(gagdir, 'genome.gff'), final_gff)
 shutil.copyfile(os.path.join(gagdir, 'genome.gbf'), final_gbk)
 shutil.copyfile(os.path.join(gagdir, 'genome.tbl'), final_tbl)
 shutil.copyfile(os.path.join(gagdir, 'genome.val'), final_validation)
@@ -1544,7 +1988,10 @@ with open(os.path.join(args.out, 'update_results', 'WGS_accession.txt'), 'w') as
 
 #last step will be to compare old gene models versus updated ones, outputting a tsv file describing the changes
 Changes = os.path.join(args.out, 'update_results', organism_name + '.pasa-reannotation.changes.txt')
-compareAnnotations(GBK, final_gbk, Changes)
+if args.gff and args.fasta:
+    compareAnnotations2(args.gff, final_gbk, Changes)
+else:
+    compareAnnotations2(GBK, final_gbk, Changes)
 
 lib.log.info("Funannotate update is finished, output files are in the %s/update_results folder" % (args.out))
 errors = lib.ncbiCheckErrors(final_error, final_validation, locustag, final_fixes)
