@@ -1213,6 +1213,20 @@ tbl_file = os.path.join(gag3dir, 'genome.tbl')
 lib.GFF2tbl(EVMCleanGFF, cleanTRNA, EVM_proteins, ContigSizes, prefix, args.numbering, args.SeqCenter, args.SeqAccession, tbl_file)
 shutil.copyfile(MaskGenome, os.path.join(gag3dir, 'genome.fsa'))
 
+#update TBL file with gene prediction program attributions
+# first generate versions.txt file
+version_file = os.path.join(args.out, 'predict_misc', 'versions.txt')
+cmd = ['funannotate', 'check', '--show-versions']
+lib.runSubprocess2(cmd, '.', lib.log, version_file)
+version_dict = lib.createPredictVersionDict(version_file)
+# now generate source_dict from evm.out file in each subfolder of predict_misc/EVM
+evm_directory = os.path.join(args.out, 'predict_misc', 'EVM')
+source_dict = lib.createEVMsourcedict(evm_directory)
+# update tbl file - save old for now
+shutil.copyfile(os.path.join(gag3dir, 'genome.tbl'), os.path.join(gag3dir, 'genome_old.tbl'))
+new_tbl_file = os.path.join(gag3dir, 'genome.tbl')
+lib.updateTBL_genepred(tbl_file, source_dict, version_dict, new_tbl_file)
+
 #setup final output files
 final_fasta = os.path.join(args.out, 'predict_results', organism_name + '.scaffolds.fa')
 final_gff = os.path.join(args.out, 'predict_results', organism_name + '.gff3')

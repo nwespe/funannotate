@@ -785,43 +785,74 @@ def countEVMpredictions(input):
                     hiq += 1
     return total, augustus, genemark, hiq, pasa, other
 
-def createEVMsourcedict(evm_out):
-    source_dict = OrderedDict()
-    with open(evm_out) as source_file:
-        for line in source_file.readlines():
-            if line[0] == '#':
-                startstop = line.split(' ')[6]
+def createEVMsourcedict(evm_directory):
+    source_dict = {}
+    for subdirectory in os.listdir(evm_directory):
+        if os.path.isdir(os.path.join(evm_directory, subdirectory)):
+            seqnum = subdirectory
+            evm_out = os.path.join(evm_directory, subdirectory, 'evm.out')
+            with open(evm_out) as source_file:
+                startstop = ''
                 sources = []
-            elif line.startswith('\n'):
-                sources = (' ').join(sources)
+                for line in source_file.readlines():
+                    if line[0] == '#':
+                        startstop = line.split(' ')[6]
+                        sources = []
+                    elif line[0] == '!':
+                        continue
+                    elif line.startswith('\n'):
+                        sources = ' '.join(sources)
+                        programs = []
+                        if 'Augustus' in sources:
+                            programs.append('Augustus')
+                        if 'GeneMark' in sources:
+                            programs.append('GeneMark-ES')
+                        source_dict[(seqnum, startstop)] = programs
+                    else:
+                        sources.append(line.split('\t')[-1])
+                sources = ' '.join(sources)
                 programs = []
                 if 'Augustus' in sources:
                     programs.append('Augustus')
                 if 'GeneMark' in sources:
                     programs.append('GeneMark-ES')
-                source_dict[startstop] = programs
-            else:
-                sources.append(line.split('\t')[-1])
-        sources = ' '.join(sources)
-        programs = []
-        if 'Augustus' in sources:
-            programs.append('Augustus')
-        if 'GeneMark' in sources:
-            programs.append('GeneMark-ES')
-        source_dict[startstop] = programs
+                source_dict[(seqnum, startstop)] = programs
     return source_dict
 
-def createVersionDict(version_file, fundb_file):
-    programs =  {'augustus': 'Augustus', 'gmes_petap.pl': 'GeneMark-ES'}
-    dbs = {'pfam': 'PFAM', 'interpro': 'InterPro', 'merops': 'MEROPS', 'uniprot': 'UniProt'}
-    # TODO: add missing: BUSCO, EggNOG, COG, CAZY, PHI-base, others?
+def updateTBL_genepred(input, sourceDict, versionDict, output):
+    '''
+    function to parse ncbi tbl format and add gene prediction source program
+    '''
+    with open(input, 'rU') as infile:
+        with open(output, 'w') as outfile:
+            for gene in readBlocks2(infile, '>Feature', '\tgene\n'):
+                if gene[0].startswith('>Feature'):
+                    seqnum = gene[0].split(' ')[1].rstrip('\n')
+                    outfile.write(''.join(gene))
+                else:
+                    start, end, word_gene = gene[0].split('\t')  # get start and end info from first line of gene
+                    startstop = '-'.join(str(x) for x in sorted([int(start.lstrip('<')), int(end.lstrip('>'))]))
+                    location_key = (seqnum, startstop)
+                    outfile.write(''.join(gene))  # write gene to outfile
+                    if location_key in sourceDict:  # if start, end in sourceDict, add lines to end of gene
+                        print location_key, sourceDict.get(location_key)
+                        for program in sourceDict.get(location_key):
+                            outfile.write('\t\t\tinference\tab initio prediction:%s:%s\n' % (program, versionDict[program]))
+
+def createPredictVersionDict(version_file):
+    programs = {'augustus': 'Augustus', 'gmes_petap.pl': 'GeneMark-ES'}
     version_dict = {}
     with open(version_file) as version_info:
         line_list = version_info.readlines()
         for program, name in programs.items():
             match = next((s for s in line_list if program in s), 'None: 0')
-            print(match)
             version_dict[name] = match.split(':')[1].lstrip(' ').rstrip('\n')
+    return version_dict
+
+def createFunctionVersionDict(fundb_file):
+    dbs = {'pfam': 'PFAM', 'interpro': 'InterPro', 'merops': 'MEROPS', 'uniprot': 'UniProt'}
+    # TODO: add missing: BUSCO, EggNOG, COG, CAZY, PHI-base, others?
+    version_dict = {}
     with open(fundb_file) as db_info:
         line_list = db_info.readlines()
         for db, name in dbs.items():
