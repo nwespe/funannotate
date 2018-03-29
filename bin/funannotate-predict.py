@@ -257,7 +257,7 @@ lib.log.info("%s detected, version seems to be compatible with BRAKER and BUSCO"
 #check input files to make sure they are not empty, first check if multiple files passed to transcript/protein evidence
 input_checks = [args.input, args.masked_genome, args.repeatmasker_gff3, args.genemark_mod, args.exonerate_proteins, args.repeatmodeler_lib, args.pasa_gff, args.other_gff, args.rna_bam]
 if not args.protein_evidence:
-    args.protein_evidence = [os.path.join(FUNDB, 'uniprot_sprot.fasta')]
+    args.protein_evidence = [os.path.join(FUNDB, 'uniprot_sprot.fasta')]  # TODO: think about modifying this part
 input_checks = input_checks + args.protein_evidence
 if args.transcript_evidence:  #if transcripts passed, otherwise ignore
     input_checks = input_checks + args.transcript_evidence
@@ -308,7 +308,7 @@ if args.input:
         lib.log.error("Fasta headers on your input have more characters than the max (%i), reformat headers to continue." % args.header_length)
         lib.log.error("First 5 header names:\n%s" % '\n'.join(header_test[1][:5]))
         sys.exit(1)
-    else:
+    else:  # TODO: what the hell is this all for?
         with open(Scaffoldsort, 'w') as contigsout:
             sortedHeaders = natsorted(header_test[1])
             contigsout.write('%s' % '\n'.join(sortedHeaders))
@@ -1097,7 +1097,7 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
             output.write("OTHER_PREDICTION\tother_pred\t%s\n" % OTHER_weight)
 
 #total up Predictions, get source counts
-EVMtotal, EVMaugustus, EVMgenemark, EVMhiq, EVMpasa, EVMother = lib.countEVMpredictions(Predictions)
+EVMtotal, EVMprodigal, EVMaugustus, EVMgenemark, EVMhiq, EVMpasa, EVMother = lib.countEVMpredictions(Predictions)
 lib.log.info('Summary of gene models passed to EVM (weights):\n\
 -------------------------------------------------------\n\
 Augustus models (1):\t{:^>,} \n\
@@ -1213,7 +1213,7 @@ tbl_file = os.path.join(gag3dir, 'genome.tbl')
 lib.GFF2tbl(EVMCleanGFF, cleanTRNA, EVM_proteins, ContigSizes, prefix, args.numbering, args.SeqCenter, args.SeqAccession, tbl_file)
 shutil.copyfile(MaskGenome, os.path.join(gag3dir, 'genome.fsa'))
 
-#update TBL file with gene prediction program attributions
+#update TBL file with gene prediction program attributions - added by NW
 # first generate versions.txt file
 version_file = os.path.join(args.out, 'predict_misc', 'versions.txt')
 cmd = ['funannotate', 'check', '--show-versions']
@@ -1222,10 +1222,11 @@ version_dict = lib.createPredictVersionDict(version_file)
 # now generate source_dict from evm.out file in each subfolder of predict_misc/EVM
 evm_directory = os.path.join(args.out, 'predict_misc', 'EVM')
 source_dict = lib.createEVMsourcedict(evm_directory)
-# update tbl file - save old for now
-shutil.copyfile(os.path.join(gag3dir, 'genome.tbl'), os.path.join(gag3dir, 'genome_old.tbl'))
+# update tbl file - save old
+old_tbl_file = os.path.join(args.out, 'predict_misc', 'genome_old.tbl')
+shutil.copyfile(tbl_file, old_tbl_file)
 new_tbl_file = os.path.join(gag3dir, 'genome.tbl')
-lib.updateTBL_genepred(tbl_file, source_dict, version_dict, new_tbl_file)
+lib.updateTBL_genepred(old_tbl_file, source_dict, version_dict, new_tbl_file)
 
 #setup final output files
 final_fasta = os.path.join(args.out, 'predict_results', organism_name + '.scaffolds.fa')

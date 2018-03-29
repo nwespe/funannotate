@@ -759,6 +759,7 @@ def countGFFgenes(input):
     return count
 
 def countEVMpredictions(input):
+    prodigal = 0
     augustus = 0
     genemark = 0
     pasa = 0
@@ -773,7 +774,9 @@ def countEVMpredictions(input):
             contig, source, feature, start, end, blank, strand, score, info = line.split('\t')
             if feature == 'gene':
                 total += 1
-                if source == 'Augustus':
+                if source == 'Prodigal':
+                    prodigal += 1
+                elif source == 'Augustus':
                     augustus += 1
                 elif source == 'GeneMark':
                     genemark += 1
@@ -783,7 +786,7 @@ def countEVMpredictions(input):
                     other += 1
                 elif source == 'HiQ':
                     hiq += 1
-    return total, augustus, genemark, hiq, pasa, other
+    return total, prodigal, augustus, genemark, hiq, pasa, other
 
 def createEVMsourcedict(evm_directory):
     source_dict = {}
@@ -803,6 +806,8 @@ def createEVMsourcedict(evm_directory):
                     elif line.startswith('\n'):
                         sources = ' '.join(sources)
                         programs = []
+                        if 'Prodigal' in sources:
+                            programs.append('Prodigal')
                         if 'Augustus' in sources:
                             programs.append('Augustus')
                         if 'GeneMark' in sources:
@@ -812,6 +817,8 @@ def createEVMsourcedict(evm_directory):
                         sources.append(line.split('\t')[-1])
                 sources = ' '.join(sources)
                 programs = []
+                if 'Prodigal' in sources:
+                    programs.append('Prodigal')
                 if 'Augustus' in sources:
                     programs.append('Augustus')
                 if 'GeneMark' in sources:
@@ -835,12 +842,25 @@ def updateTBL_genepred(input, sourceDict, versionDict, output):
                     location_key = (seqnum, startstop)
                     outfile.write(''.join(gene))  # write gene to outfile
                     if location_key in sourceDict:  # if start, end in sourceDict, add lines to end of gene
-                        print location_key, sourceDict.get(location_key)
                         for program in sourceDict.get(location_key):
                             outfile.write('\t\t\tinference\tab initio prediction:%s:%s\n' % (program, versionDict[program]))
 
+def updateTBL_genepred_single(input, program, versionDict, output):
+    '''
+    function to parse ncbi tbl format and add gene prediction source program if only one program was run
+    '''
+    with open(input, 'rU') as infile:
+        with open(output, 'w') as outfile:
+            for gene in readBlocks2(infile, '>Feature', '\tgene\n'):
+                if gene[0].startswith('>Feature'):
+                    outfile.write(''.join(gene))
+                else:
+                    outfile.write(''.join(gene))  # write gene to outfile
+                    outfile.write('\t\t\tinference\tab initio prediction:%s:%s\n' % (program, versionDict[program]))
+
+
 def createPredictVersionDict(version_file):
-    programs = {'augustus': 'Augustus', 'gmes_petap.pl': 'GeneMark-ES'}
+    programs = {'prodigal': 'Prodigal', 'augustus': 'Augustus', 'gmes_petap.pl': 'GeneMark-ES'}
     version_dict = {}
     with open(version_file) as version_info:
         line_list = version_info.readlines()
@@ -3731,6 +3751,8 @@ def RunGeneMarkET(input, ini, evidence, maxintron, cpus, tmpdir, output, fungus)
     with open(output, 'w') as out:
         subprocess.call([GeneMark2GFF, gm_gtf], stdout = out)
     log.info('Found {0:,}'.format(countGFFgenes(output)) +' gene models')
+
+def RunProdigal(input, cpus, tmpdir, output):
 
 
 def MemoryCheck():

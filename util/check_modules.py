@@ -89,8 +89,12 @@ def check_version2(name):
     
 def check_version3(name):
     try:
-        vers = subprocess.Popen([name, '-v'], stdout=subprocess.PIPE).communicate()[0].split('\n')[0]
-        vers = vers.replace('version open-', '')
+        if name == 'prodigal':
+            vers = subprocess.Popen([name, '-v'], stderr=subprocess.STDOUT, stdout=subprocess.PIPE).communicate()[0].strip()
+            vers = vers.split(' ')[1].lstrip('V').rstrip(':')
+        else:
+            vers = subprocess.Popen([name, '-v'], stdout=subprocess.PIPE).communicate()[0].split('\n')[0]
+            vers = vers.replace('version open-', '')
     except OSError as e:
         if e.errno == os.errno.ENOENT:
             return False
@@ -156,7 +160,7 @@ funannotate_python = ['numpy', 'pandas', 'matplotlib', 'scipy', 'scikit-learn', 
 
 programs1 = ['tblastn', 'makeblastdb', 'rmblastn', 'java', 'rmOutToGFF3.pl'] #-version
 programs2 = ['exonerate', 'bedtools', 'bamtools', 'augustus', 'samtools', 'gmap', 'hisat2', 'Trinity', 'nucmer', 'tbl2asn', 'emapper.py', 'minimap2'] #--version
-programs3 = ['RepeatModeler', 'RepeatMasker'] #-v
+programs3 = ['RepeatModeler', 'RepeatMasker', 'prodigal'] #-v
 programs4 = ['diamond', 'ete3', 'kallisto'] #version
 programs5 = ['gmes_petap.pl', 'blat', 'pslCDnaFilter', 'fasta'] #no version option at all, a$$holes
 programs6 = ['hmmsearch', 'hmmscan'] #-h
