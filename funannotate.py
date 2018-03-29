@@ -94,6 +94,7 @@ Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
         else:
             print help
             sys.exit(1)
+
     elif sys.argv[1] == 'sort':
         help = """
 Usage:       funannotate %s <arguments>
@@ -244,7 +245,82 @@ Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
         else:
             print help
             sys.exit(1)
-                  
+
+    elif sys.argv[1] == 'prokaryote':
+        help = """
+    Usage:       funannotate %s <arguments>
+    version:     %s
+
+    Description: Script takes genome multi-fasta file and a variety of inputs to do a comprehensive whole
+                 genome gene model prediction for prokaryotes.  Uses Prodigal, AUGUSTUS, GeneMark, BUSCO, BRAKER1, 
+                 EVidence Modeler, GAG, tbl2asn, tRNAScan-SE, RepeatModeler, RepeatMasker, Exonerate, GMAP
+
+    Required:  -i, --input            Genome multi-fasta file.
+               -o, --out              Output folder name.
+               -s, --species          Species name, use quotes for binomial, e.g. "Escherichia coli"
+           or
+               --masked_genome        Soft-masked genome (repeats lowercase)
+               --repeatmasker_gff3    RepeatMasker derived GFF3 file
+               -s, --species          Species name, use quotes for binomial, e.g. "Escherichia coli"
+
+    Optional:  --isolate              Isolate name, e.g. K12
+               --strain               Strain name, e.g. FGSCA4           
+               --name                 Locus tag name (assigned by NCBI?). Default: FUN_
+               --numbering            Specify where gene numbering starts. Default: 1
+               --maker_gff            MAKER2 GFF file. Parse results directly to EVM.
+               --pasa_gff             PASA generated gene models. filename:weight
+               --other_gff            Annotation pass-through to EVM. filename:weight
+               --rna_bam              RNA-seq mapped to genome to train Augustus/GeneMark-ET
+               --repeatmasker_species Taxonomy to use for RepeatMasker, will skip RepeatModeler.      
+               --augustus_species     Augustus species config. Default: uses species name
+               --genemark_mod         GeneMark ini mod file.
+               --protein_evidence     Proteins to map to genome (prot1.fa,prot2.fa,uniprot.fa). Default: uniprot.fa
+               --transcript_evidence  mRNA/ESTs to align to genome (trans1.fa,ests.fa,trinity.fa). Default: none
+               --busco_seed_species   Augustus pre-trained species to start BUSCO. Default: E_coli_K12
+               --optimize_augustus    Run 'optimze_augustus.pl' to refine training (long runtime)
+               --busco_db             BUSCO models. Default: dikarya. `funannotate outgroups --show_buscos`
+               --organism             Fungal-specific options. Default: other. [fungus,other]
+               --ploidy               Ploidy of assembly. Default: 1
+               -t, --tbl2asn          Assembly parameters for tbl2asn. Example: "-l paired-ends"
+               -d, --database         Path to funannotate database. Default: $FUNANNOTATE_DB
+
+               --augustus_gff         Pre-computed AUGUSTUS GFF3 results (must use --stopCodonExcludedFromCDS=False)
+               --genemark_gtf         Pre-computed GeneMark GTF results
+               --prodigal_gff         Pre-computed Prodigal gene models (GFF3)
+               --run_augustus         Run Augustus program for gene prediction
+               --run_genemark         Run GeneMark program for gene prediction
+               --exonerate_proteins   Pre-computed exonerate protein alignments (see docs for format)
+               --gmap_gff             Pre-computed transcript alignments (GFF3 gmap output)
+               --repeatmodeler_lib    Pre-computed RepeatModeler library (multi-fasta)
+
+               --min_intronlen        Minimum intron length. Default: 10
+               --max_intronlen        Maximum intron length. Default: 3000
+               --min_protlen          Minimum protein length. Default: 20
+               --keep_no_stops        Keep gene models without valid stops.
+               --SeqCenter            Sequencing facility for NCBI tbl file. Default: CFMR
+               --SeqAccession         Sequence accession number for NCBI tbl file. Default: 12345
+               --cpus                 Number of CPUs to use. Default: 2
+
+    ENV Vars:  If not specified at runtime, will be loaded from your $PATH 
+               --EVM_HOME
+               --AUGUSTUS_CONFIG_PATH
+               --GENEMARK_PATH
+               --BAMTOOLS_PATH
+
+    Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
+            """ % (sys.argv[1], version)
+
+        arguments = sys.argv[2:]
+        if len(arguments) > 1:
+            cmd = os.path.join(script_path, 'bin', 'funannotate-predict-prok.py')
+            arguments.insert(0, cmd)
+            exe = sys.executable
+            arguments.insert(0, exe)
+            subprocess.call(arguments)
+        else:
+            print help
+            sys.exit(1)
+
     elif sys.argv[1] == 'update':
         help = """
 Usage:       funannotate %s <arguments>
@@ -431,6 +507,7 @@ Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
         else:
             print help
             sys.exit(1)
+
     elif sys.argv[1] == 'fix':
         help = """
 Usage:       funannotate %s <arguments>
@@ -460,6 +537,7 @@ Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
         else:
             print help
             sys.exit(1)
+
     elif sys.argv[1] == 'species':
         try:
             AUGUSTUS = os.environ["AUGUSTUS_CONFIG_PATH"]
@@ -554,6 +632,7 @@ Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
         else:
             print help
             sys.exit(1)
+
     elif sys.argv[1] == 'database':
         #setup funannotate DB path
         try:
@@ -640,8 +719,10 @@ Written by Jon Palmer (2016-2017) nextgenusfs@gmail.com
         else:
             print help
             sys.exit(1)
+
     elif sys.argv[1] == 'version':
         print "funannotate v%s" % version
+
     else:
         print "%s option not recognized" % sys.argv[1]
         print default_help

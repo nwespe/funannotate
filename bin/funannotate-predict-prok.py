@@ -53,7 +53,7 @@ parser.add_argument('--busco_seed_species', default='E_coli_K12', help='Augustus
 parser.add_argument('--optimize_augustus', action='store_true', help='Run "long" training of Augustus')
 parser.add_argument('--busco_db', default='dikarya', help='BUSCO model database')
 parser.add_argument('-t','--tbl2asn', default='-l paired-ends', help='Parameters for tbl2asn, linkage and gap info')
-parser.add_argument('--organism', default='fungus', choices=['fungus', 'other'], help='Fungal specific settings')
+parser.add_argument('--organism', default='other', choices=['fungus', 'other'], help='Fungal specific settings')
 parser.add_argument('--SeqCenter', default='CFMR', help='Sequencing center for GenBank tbl file')
 parser.add_argument('--SeqAccession', default='12345', help='Sequencing accession number')
 parser.add_argument('-d','--database', help='Path to funannotate database, $FUNANNOTATE_DB')
@@ -351,6 +351,7 @@ else:
     
 #setup augustus parallel command
 AUGUSTUS_PARALLEL = os.path.join(parentdir, 'bin', 'augustus_parallel.py')
+PRODIGAL_PARALLEL = os.path.join(parentdir, 'bin', 'prodigal_parallel.py')
 
 #EVM command line scripts
 Converter = os.path.join(EVM, 'EvmUtils', 'misc', 'augustus_GFF3_to_EVM_GFF3.pl')
@@ -1072,8 +1073,11 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
 
     if not Prodigal:
         Prodigal = os.path.join(args.out, 'predict_misc', 'prodigal.gff3')
+        Prodigal_proteins = os.path.join(args.out, 'predict_misc', 'prodigal.proteins.fa')
         if not os.path.isfile(Prodigal):
-            lib.RunProdigal(Genome, args.cpus, os.path.join(args.out, 'predict_misc'), Prodigal)
+            lib.log.info("Running Prodigal gene prediction")
+            cmd = [PRODIGAL_PARALLEL, '-i', MaskGenome, '-o', Prodigal, '-p', Prodigal_proteins, '-f', 'gff', '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
+            subprocess.call(cmd)
             #In future, if we want to pass prodigal.gff to EVM, will need to make compatible
             # ProdigalTemp = os.path.join(args.out, 'predict_misc', 'prodigal.temp.gff')
             # cmd = ['perl', Converter, ProdigalGFF3]  #need to write Converter script for Prodigal GFF

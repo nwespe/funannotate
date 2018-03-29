@@ -36,7 +36,7 @@ if AUGUSTUS.endswith('config'):
 elif AUGUSTUS.endswith('config'+os.sep):
     AUGUSTUS_BASE = AUGUSTUS.replace('config'+os.sep, '')
 
-#setup hints and extrinic input, hard coded for protein and transcript alignments from funannotate
+#setup hints and extrinsic input, hard coded for protein and transcript alignments from funannotate
 extrinsic = '--extrinsicCfgFile='+os.path.join(AUGUSTUS_BASE, 'config', 'extrinsic', 'extrinsic.E.XNT.cfg')
 
 def countGFFgenes(input):

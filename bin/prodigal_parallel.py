@@ -16,7 +16,7 @@ parser=argparse.ArgumentParser(prog='prodigal_parallel.py', usage="%(prog)s [opt
     epilog="""Modified from augustus-parallel.py written by Jon Palmer (2016) nextgenusfs@gmail.com""",
     formatter_class = MyFormatter)
 parser.add_argument('-i','--input', required=True, help='Genome in FASTA format')
-parser.add_argument('-o','--out', default='prodigal.gff', help='Name of output file')
+parser.add_argument('-o','--out', default='prodigal.gff3', help='Name of output file')
 parser.add_argument('-p','--proteins', default='prodigal.proteins.fa', help='Name of proteins output file')
 parser.add_argument('-f','--format', default='gff', help='Output file format')
 parser.add_argument('--cpus', default=2, type=int, help='Number of CPUs to run')

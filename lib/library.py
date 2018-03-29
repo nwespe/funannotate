@@ -3752,9 +3752,6 @@ def RunGeneMarkET(input, ini, evidence, maxintron, cpus, tmpdir, output, fungus)
         subprocess.call([GeneMark2GFF, gm_gtf], stdout = out)
     log.info('Found {0:,}'.format(countGFFgenes(output)) +' gene models')
 
-def RunProdigal(input, cpus, tmpdir, output):
-
-
 def MemoryCheck():
     import psutil
     mem = psutil.virtual_memory()
