@@ -1244,7 +1244,7 @@ final_fixes = os.path.join(args.out, 'predict_results', organism_name+'.models-n
 SBT = os.path.join(parentdir, 'lib', 'test.sbt')
 discrep = os.path.join(args.out, 'predict_results', organism_name + '.discrepency.report.txt')
 lib.log.info("Converting to final Genbank format")
-tbl2asn_cmd = lib.runtbl2asn(gag3dir, SBT, discrep, args.species, args.isolate, args.strain, args.tbl2asn, 1)
+tbl2$asn_cmd = lib.runtbl2asn(gag3dir, SBT, discrep, args.species, args.isolate, args.strain, args.tbl2asn, 1, False)
 
 #retrieve files/reorganize
 #shutil.copyfile(os.path.join(gag3dir, 'genome.gff'), final_gff)

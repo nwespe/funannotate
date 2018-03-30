@@ -3813,7 +3813,7 @@ def runtRNAscan(input, tmpdir, output):
         subprocess.call(['perl', trna2gff, '--input', tRNAlenOut], stdout = out)
     log.info('Found {0:,}'.format(countGFFgenes(output)) +' tRNA gene models')
 
-def runtbl2asn(folder, template, discrepency, organism, isolate, strain, parameters, version):
+def runtbl2asn(folder, template, discrepancy, organism, isolate, strain, parameters, version, prokaryote):
     '''
     function to run NCBI tbl2asn
     '''
@@ -3834,7 +3834,9 @@ def runtbl2asn(folder, template, discrepency, organism, isolate, strain, paramet
     if strain:
         strain_meta = "[strain=" + strain + "]"
         meta = meta + " " + strain_meta
-    cmd = ['tbl2asn', '-y', '"Annotated using '+fun_version+'"', '-N', str(version), '-p', folder, '-t', template, '-M', 'n', '-Z', discrepency, '-j', '"'+meta+'"', '-V', 'b', '-c', 'fx', '-T', '-a', 'r10u']
+    if prokaryote:
+        meta = meta + " [gcode=11]"
+    cmd = ['tbl2asn', '-y', '"Annotated using '+fun_version+'"', '-N', str(version), '-p', folder, '-t', template, '-M', 'n', '-Z', discrepancy, '-j', '"'+meta+'"', '-V', 'b', '-c', 'fx', '-T', '-a', 'r10u']
     #check for custom parameters
     if parameters:
         params = parameters.split(' ')
