@@ -880,6 +880,14 @@ def createFunctionVersionDict(fundb_file):
             version_dict[name] = match.split('\t')[3].rstrip(' ')
     return version_dict
 
+def cleanProdigalGFF(input, output):
+    with open(output, 'w') as outfile:
+        with open(input, 'rU') as infile:
+            for line in infile:
+                if line.startswith('#'):
+                    continue
+                outfile.write(line)
+
 def countGMAPtranscripts(input):
     count = 0
     with open(input, 'rU') as f:

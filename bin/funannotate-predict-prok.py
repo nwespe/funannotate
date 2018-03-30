@@ -12,7 +12,7 @@ from natsort import natsorted
 class MyFormatter(argparse.ArgumentDefaultsHelpFormatter):
     def __init__(self, prog):
         super(MyFormatter, self).__init__(prog, max_help_position=48)
-parser = argparse.ArgumentParser(prog='funannotate-predict.py', usage="%(prog)s [options] -i genome.fasta",
+parser = argparse.ArgumentParser(prog='funannotate-predict-prok.py', usage="%(prog)s [options] -i genome.fasta",
     description = '''Gene prediction for prokaryotic genomes.''',
     epilog = """Modified from funannotate-predict.py written by Jon Palmer (2016) nextgenusfs@gmail.com""",
     formatter_class = MyFormatter)
@@ -1076,7 +1076,7 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
         Prodigal_proteins = os.path.join(args.out, 'predict_misc', 'prodigal.proteins.fa')
         if not os.path.isfile(Prodigal):
             lib.log.info("Running Prodigal gene prediction")
-            cmd = [PRODIGAL_PARALLEL, '-i', MaskGenome, '-o', Prodigal, '-p', Prodigal_proteins, '-f', 'gff', '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
+            cmd = [PRODIGAL_PARALLEL, '-i', MaskGenome, '-o', Prodigal, '-p', Prodigal_proteins, '-f', 'gff', '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'prodigal-parallel.log')]
             subprocess.call(cmd)
             #In future, if we want to pass prodigal.gff to EVM, will need to make compatible
             # ProdigalTemp = os.path.join(args.out, 'predict_misc', 'prodigal.temp.gff')
@@ -1214,7 +1214,8 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
     # If only Prodigal was run, substitute prodigal.gff for evm.round1.gff and prodigal.proteins.fa for evm.round1.proteins.fa
     # Leave variable names with EVM for now, even if EVM not run
     else:
-        EVM_out = Prodigal
+        EVM_out = os.path.join(args.out, 'predict_misc', 'prodigal.evm.gff3')
+        lib.cleanProdigalGFF(Prodigal, EVM_out)
         EVM_proteins = os.path.join(args.out, 'predict_misc', 'prodigal.proteins.fa')
 
 #now filter bad models
@@ -1267,8 +1268,8 @@ if EVM_run:
     evm_directory = os.path.join(args.out, 'predict_misc', 'EVM')
     source_dict = lib.createEVMsourcedict(evm_directory)  # generate source_dict from evm.out file in each subfolder of predict_misc/EVM
     lib.updateTBL_genepred(old_tbl_file, source_dict, version_dict, new_tbl_file)
-else:  # only one program was run
-    lib.updateTBL_genepred_single(old_tbl_file, predictions_run[0], version_dict, new_tbl_file)
+else:  # only Prodigal was run
+    lib.updateTBL_genepred_single(old_tbl_file, 'Prodigal', version_dict, new_tbl_file)
 
 
 #setup final output files
@@ -1285,7 +1286,7 @@ final_fixes = os.path.join(args.out, 'predict_results', organism_name+'.models-n
 #run tbl2asn in new directory directory
 #setup SBT file
 SBT = os.path.join(parentdir, 'lib', 'test.sbt')
-discrep = os.path.join(args.out, 'predict_results', organism_name + '.discrepency.report.txt')
+discrep = os.path.join(args.out, 'predict_results', organism_name + '.discrepancy.report.txt')
 lib.log.info("Converting to final Genbank format")
 tbl2asn_cmd = lib.runtbl2asn(gag3dir, SBT, discrep, args.species, args.isolate, args.strain, args.tbl2asn, 1)
 

@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser(prog='funannotate-setup.py', usage="%(prog)s [o
     formatter_class = MyFormatter)
 parser.add_argument('-i', '--install', nargs='+', default=['all'], choices=['all', 'merops', 'uniprot', 'dbCAN', 'pfam', 'repeats', 'go', 'mibig', 'interpro', 'busco_outgroups', 'gene2product', 'busco'], help='Databases to download/install')
 parser.add_argument('-d', '--database', help='Path to database')
-parser.add_argument('-u', '--update', action='store_true', help='Check if new DB is availabe and update')
+parser.add_argument('-u', '--update', action='store_true', help='Check if new DB is available and update')
 parser.add_argument('-f', '--force', action='store_true', help='Overwrite current database')
 parser.add_argument('-b', '--busco_db', default=['dikarya'], nargs='+', choices=['all','fungi','microsporidia','dikarya','ascomycota','pezizomycotina','eurotiomycetes','sordariomycetes','saccharomycetes','saccharomycetales','basidiomycota','eukaryota','protists','alveolata_stramenophiles','metazoa','nematoda','arthropoda','insecta','endopterygota','hymenoptera','diptera','vertebrata','actinopterygii','tetrapoda','aves','mammalia','euarchontoglires','laurasiatheria','embryophyta'], help='choose which busco databases to install')
 args=parser.parse_args()

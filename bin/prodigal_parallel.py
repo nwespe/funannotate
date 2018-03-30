@@ -85,16 +85,32 @@ with open(args.out, 'w') as output:
         scaf_id = scaffold.lstrip('sequence')
         with open(scaf_file) as input:
             for line in input:
-                line = line.replace('CDS', 'gene')   # substitute gene for CDS
-                line = line.replace('ID=1_', 'ID=' + scaf_id + '_')  # substitute scaffold number for ID=X
-                output.write(line)
+                if line.startswith('#'):
+                    output.write(line)
+                else:
+                    ID = line.split('\t')[-1].split(';')[0]  # 'ID=1_1'
+                    gene_line = line.replace('CDS', 'gene')
+                    geneID = 'gene.' + scaf_id + '_' + ID.split('_')[-1]  # 'ID=gene.3_1'
+                    gene_line = '\t'.join(gene_line.split('\t')[:-1] + ['ID=' + geneID + '\n'])
+                    output.write(gene_line)
+                    mrna_line = line.replace('CDS', 'exon')
+                    mrnaID = 'mrna.' + scaf_id + '_' + ID.split('_')[-1]  # 'ID=mrna.3_1'
+                    mrna_line = '\t'.join(mrna_line.split('\t')[:-1] + ['ID=' + mrnaID + ';Parent=' + geneID + '\n'])
+                    output.write(mrna_line)
+                    cdsID = 'cds.' + scaf_id + '_' + ID.split('_')[-1]  # 'ID=cds.3_1'
+                    cds_line = '\t'.join(line.split('\t')[:-1] + ['ID=' + cdsID + ';Parent=' + geneID + '\n'])
+                    output.write(cds_line + '\n')
 
 with open(args.proteins, 'w') as output:
     for scaffold in scaffolds:
         prot_file = os.path.join(tmpdir, scaffold + '.proteins.faa')
         scaf_id = scaffold.lstrip('sequence')
         with open(prot_file) as input:
-            output.write(input.read().replace('ID=1_', 'ID=' + scaf_id + '_'))
+            for line in input:
+                if line.startswith('>'):
+                    line = line.replace('sequence', 'gene.')  # remove 'sequence' from record ID
+                    line = line.replace('ID=1_', 'ID=gene.' + scaf_id + '_')  # substitute scaffold number for ID=X
+                output.write(line)
 
 if not args.debug:
     shutil.rmtree(tmpdir)
