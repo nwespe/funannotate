@@ -12,8 +12,8 @@ from natsort import natsorted
 class MyFormatter(argparse.ArgumentDefaultsHelpFormatter):
     def __init__(self, prog):
         super(MyFormatter, self).__init__(prog, max_help_position=48)
-parser = argparse.ArgumentParser(prog='funannotate-predict-prok.py', usage="%(prog)s [options] -i genome.fasta",
-    description = '''Gene prediction for prokaryotic genomes.''',
+parser = argparse.ArgumentParser(prog='funannotate-predict.py', usage="%(prog)s [options] -i genome.fasta",
+    description = '''Gene prediction for prokaryotic and eukaryotic genomes.''',
     epilog = """Modified from funannotate-predict.py written by Jon Palmer (2016) nextgenusfs@gmail.com""",
     formatter_class = MyFormatter)
 parser.add_argument('-i', '--input', help='Genome in FASTA format')
@@ -27,6 +27,9 @@ parser.add_argument('--repeatmasker_species', help='RepeatMasker species, will s
 parser.add_argument('--header_length', default=16, type=int, help='Max length for fasta headers')
 parser.add_argument('--name', default="FUN_", help='Shortname for genes, perhaps assigned by NCBI, eg. VC83')
 parser.add_argument('--numbering', default=1, help='Specify start of gene numbering')
+parser.add_argument('--prokaryote', action='store_true', help='Organism is prokaryote; will run Prodigal only unless --run_augustus or --run_genemark are also set')
+parser.add_argument('--run_augustus', action='store_true', help='Run Augustus program for gene prediction; default on for eukaryote, off for prokaryote')
+parser.add_argument('--run_genemark', action='store_true', help='Run GeneMark program for gene prediction; default on for eukaryote, off for prokaryote')
 parser.add_argument('--augustus_species', help='Specify species for Augustus')
 parser.add_argument('--genemark_mod', help='Use pre-existing Genemark training file (e.g. gmhmm.mod)')
 parser.add_argument('--protein_evidence', nargs='+', help='Specify protein evidence (multiple files can be separated by a space)')
@@ -38,8 +41,6 @@ parser.add_argument('--other_gff', help='GFF gene prediction pass-through to EVM
 parser.add_argument('--augustus_gff', help='Pre-computed Augustus gene models (GFF3)')
 parser.add_argument('--genemark_gtf', help='Pre-computed GeneMark gene models (GTF)')
 parser.add_argument('--prodigal_gff', help='Pre-computed Prodigal gene models (GFF3)')
-parser.add_argument('--run_augustus', action='store_true', help='Run Augustus program for gene prediction')
-parser.add_argument('--run_genemark', action='store_true', help='Run GeneMark program for gene prediction')
 parser.add_argument('--maker_gff', help='MAKER2 GFF output')
 parser.add_argument('--repeatmodeler_lib', help='Pre-computed RepeatModeler (or other) repetitive elements')
 parser.add_argument('--rna_bam', help='BAM (sorted) of RNAseq aligned to reference for BRAKER')
@@ -210,8 +211,6 @@ if os.path.isdir(os.path.join(args.out, 'training')):
 if len(pre_existing) > 0:
     lib.log.info("Found training files, will re-use these files:\n%s" % '\n'.join(pre_existing))
 
-
-
 #see if organism/species/isolate was passed at command line, build PASA naming scheme
 organism = None
 if args.species:
@@ -226,7 +225,16 @@ else:
     organism_name = organism
 organism_name = organism_name.replace(' ', '_')
 
-if args.run_augustus:
+#set logic for which programs to run
+RUN_AUGUSTUS = True
+RUN_GENEMARK = True
+if args.prokaryote:
+    if not args.run_augustus:
+        RUN_AUGUSTUS = False
+    if not args.run_genemark:
+        RUN_GENEMARK = False
+
+if RUN_AUGUSTUS:
     #check augustus species now, so that you don't get through script and then find out it is already in DB
     if not args.augustus_species:
         aug_species = organism_name.lower()
@@ -589,6 +597,15 @@ else:
         cmd = ['perl', Converter, aug_out]
         lib.runSubprocess2(cmd, '.', lib.log, Augustus)
 
+    #if args.prodigal_gff:
+        # TODO: write converter script for typical Prodigal output (i.e., not run via prodigal_parallel.py
+        # convert Prodigal
+        # prodigal_out = args.prodigal_gff
+        # Prodigal = os.path.join(args.out, 'predict_misc', 'prodigal.evm.gff3')
+        # cmd = ['perl', Converter, prodigal_out]
+        # lib.runSubprocess2(cmd, '.', lib.log, Prodigal)
+        # TODO: decide how to handle proteins.fa input if Prodigal run separately
+
     if args.rna_bam and not any([GeneMark, Augustus]) and args.braker:
         #now need to run BRAKER1
         braker_log = os.path.join(args.out, 'logfiles', 'braker.log')
@@ -673,7 +690,7 @@ else:
         cmd = ['perl', Converter, aug_out]
         lib.runSubprocess2(cmd, '.', lib.log, Augustus)
 
-    if args.run_genemark and not GeneMark:
+    if RUN_GENEMARK and not GeneMark:  # TODO: determine which parameters need to be altered if args.prokaryote
         GeneMarkGFF3 = os.path.join(args.out, 'predict_misc', 'genemark.gff')
         #count contigs
         num_contigs = lib.countfasta(MaskGenome)
@@ -756,7 +773,7 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
             lib.log.error(
                 "GeneMark predictions failed. If you can run GeneMark outside of funannotate, then pass the results to --genemark_gtf, proceeding with only Augustus predictions.")
 
-    if args.run_augustus and not Augustus:
+    if RUN_AUGUSTUS and not Augustus:  # TODO: determine which parameters need to be altered if args.prokaryote
         # check for protein evidence/format as needed
         p2g_out = os.path.join(args.out, 'predict_misc', 'exonerate.out')
         prot_temp = os.path.join(args.out, 'predict_misc', 'proteins.combined.fa')
@@ -1071,22 +1088,19 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
                                 else:
                                     HiQ_out.write(line)
 
-    if not Prodigal:
+    if args.prokaryote and not Prodigal:
         Prodigal = os.path.join(args.out, 'predict_misc', 'prodigal.gff3')
         Prodigal_proteins = os.path.join(args.out, 'predict_misc', 'prodigal.proteins.fa')
         if not os.path.isfile(Prodigal):
             lib.log.info("Running Prodigal gene prediction")
             cmd = [PRODIGAL_PARALLEL, '-i', MaskGenome, '-o', Prodigal, '-p', Prodigal_proteins, '-f', 'gff', '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'prodigal-parallel.log')]
             subprocess.call(cmd)
-            #In future, if we want to pass prodigal.gff to EVM, will need to make compatible
-            # ProdigalTemp = os.path.join(args.out, 'predict_misc', 'prodigal.temp.gff')
-            # cmd = ['perl', Converter, ProdigalGFF3]  #need to write Converter script for Prodigal GFF
-            # lib.runSubprocess2(cmd, '.', lib.log, ProdigalTemp)
-            # Prodigal = os.path.join(args.out, 'predict_misc', 'prodigal.evm.gff3')
-            # with open(Prodigal, 'w') as output:
-            #     with open(ProdigalTemp, 'rU') as input:
-            #         lines = input.read().replace("Augustus", "Prodigal")
-            #         output.write(lines)
+        #else:
+        #    lib.log.info("Existing Prodigal annotations found {:}".format(aug_out))
+        # TODO: move formatting changes from prodigal_parallel.py to the converter script
+        #Prodigal = os.path.join(args.out, 'predict_misc', 'prodigal.evm.gff3')
+        #cmd = ['perl', Converter, aug_out]
+        #lib.runSubprocess2(cmd, '.', lib.log, Prodigal)
 
     #just double-check that you've gotten here and at least one program has finished
     if not any([Augustus, GeneMark, Prodigal]):
@@ -1214,7 +1228,7 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
     # If only Prodigal was run, substitute prodigal.gff for evm.round1.gff and prodigal.proteins.fa for evm.round1.proteins.fa
     # Leave variable names with EVM for now, even if EVM not run
     else:
-        EVM_out = os.path.join(args.out, 'predict_misc', 'prodigal.evm.gff3')
+        EVM_out = os.path.join(args.out, 'predict_misc', 'prodigal.gff3')  # after conversion script, this will be prodigal.evm.gff3
         lib.cleanProdigalGFF(Prodigal, EVM_out)
         EVM_proteins = os.path.join(args.out, 'predict_misc', 'prodigal.proteins.fa')
 
@@ -1288,7 +1302,7 @@ final_fixes = os.path.join(args.out, 'predict_results', organism_name+'.models-n
 SBT = os.path.join(parentdir, 'lib', 'test.sbt')
 discrep = os.path.join(args.out, 'predict_results', organism_name + '.discrepancy.report.txt')
 lib.log.info("Converting to final Genbank format")
-tbl2asn_cmd = lib.runtbl2asn(gag3dir, SBT, discrep, args.species, args.isolate, args.strain, args.tbl2asn, 1, True)
+tbl2asn_cmd = lib.runtbl2asn(gag3dir, SBT, discrep, args.species, args.isolate, args.strain, args.tbl2asn, 1, args.prokaryote)
 
 #retrieve files/reorganize
 #shutil.copyfile(os.path.join(gag3dir, 'genome.gff'), final_gff)
