@@ -12,14 +12,14 @@ from natsort import natsorted
 class MyFormatter(argparse.ArgumentDefaultsHelpFormatter):
     def __init__(self, prog):
         super(MyFormatter, self).__init__(prog, max_help_position=48)
-parser = argparse.ArgumentParser(prog='funannotate-predict.py', usage="%(prog)s [options] -i genome.fasta",
-    description = '''Script that does it all.''',
-    epilog = """Written by Jon Palmer (2016) nextgenusfs@gmail.com""",
+parser = argparse.ArgumentParser(prog='funannotate-predict.py', usage="%(prog)s [options]",
+    description = '''Gene prediction for prokaryotic and eukaryotic genomes.''',
+    epilog = """Modified from funannotate-predict.py written by Jon Palmer (2016) nextgenusfs@gmail.com""",
     formatter_class = MyFormatter)
 parser.add_argument('-i', '--input', help='Genome in FASTA format')
 parser.add_argument('-o', '--out', required=True, help='Basename of output files')
-parser.add_argument('-s', '--species', required=True, help='Species name (e.g. "Aspergillus fumigatus") use quotes if there is a space')
-parser.add_argument('--isolate', help='Isolate name (e.g. Af293)')
+parser.add_argument('-s', '--species', required=True, help='Species name (e.g. "Escherichia coli") use quotes if there is a space')
+parser.add_argument('--isolate', help='Isolate name (e.g. K12)')
 parser.add_argument('--strain', help='Strain name (e.g. CEA10)')
 parser.add_argument('--masked_genome', help='Soft-masked Genome in FASTA format ')
 parser.add_argument('--repeatmasker_gff3', help='RepeatMasker GFF3 file')
@@ -27,9 +27,12 @@ parser.add_argument('--repeatmasker_species', help='RepeatMasker species, will s
 parser.add_argument('--header_length', default=16, type=int, help='Max length for fasta headers')
 parser.add_argument('--name', default="FUN_", help='Shortname for genes, perhaps assigned by NCBI, eg. VC83')
 parser.add_argument('--numbering', default=1, help='Specify start of gene numbering')
+parser.add_argument('--prokaryote', action='store_true', help='Organism is prokaryote; will run Prodigal only unless --run_augustus or --run_genemark are also set')
+parser.add_argument('--run_augustus', action='store_true', help='Run Augustus program for gene prediction; default on for eukaryote, off for prokaryote')
+parser.add_argument('--run_genemark', action='store_true', help='Run GeneMark program for gene prediction; default on for eukaryote, off for prokaryote')
 parser.add_argument('--augustus_species', help='Specify species for Augustus')
 parser.add_argument('--genemark_mod', help='Use pre-existing Genemark training file (e.g. gmhmm.mod)')
-parser.add_argument('--protein_evidence', nargs='+', help='Specify protein evidence (multiple files can be separaed by a space)')
+parser.add_argument('--protein_evidence', nargs='+', help='Specify protein evidence (multiple files can be separated by a space)')
 parser.add_argument('--exonerate_proteins', help='Pre-computed Exonerate protein alignments (see README for how to run exonerate)')
 parser.add_argument('--transcript_evidence', nargs='+', help='Transcript evidence (map to genome with GMAP)')
 parser.add_argument('-gm', '--genemark_mode', default='ES', choices=['ES', 'ET'], help='Mode to run genemark in')
@@ -37,6 +40,7 @@ parser.add_argument('--pasa_gff', help='Pre-computed PASA/TransDecoder high qual
 parser.add_argument('--other_gff', help='GFF gene prediction pass-through to EVM')
 parser.add_argument('--augustus_gff', help='Pre-computed Augustus gene models (GFF3)')
 parser.add_argument('--genemark_gtf', help='Pre-computed GeneMark gene models (GTF)')
+parser.add_argument('--prodigal_gff', help='Pre-computed Prodigal gene models (GFF3)')
 parser.add_argument('--maker_gff', help='MAKER2 GFF output')
 parser.add_argument('--repeatmodeler_lib', help='Pre-computed RepeatModeler (or other) repetitive elements')
 parser.add_argument('--rna_bam', help='BAM (sorted) of RNAseq aligned to reference for BRAKER')
@@ -46,7 +50,7 @@ parser.add_argument('--min_protlen', default=50, type=int, help='Minimum amino a
 parser.add_argument('--keep_no_stops', action='store_true', help='Keep gene models without valid stop codons')
 parser.add_argument('--ploidy', default=1, type=int, help='Ploidy of assembly')
 parser.add_argument('--cpus', default=2, type=int, help='Number of CPUs to use')
-parser.add_argument('--busco_seed_species', default='anidulans', help='Augustus species to use as initial training point for BUSCO')
+parser.add_argument('--busco_seed_species', default='E_coli_K12', help='Augustus species to use as initial training point for BUSCO')
 parser.add_argument('--optimize_augustus', action='store_true', help='Run "long" training of Augustus')
 parser.add_argument('--busco_db', default='dikarya', help='BUSCO model database')
 parser.add_argument('-t','--tbl2asn', default='-l paired-ends', help='Parameters for tbl2asn, linkage and gap info')
@@ -117,7 +121,7 @@ else:
         lib.log.error('Funannotate database not properly configured, run funannotate setup.')
         sys.exit(1)
         
-#check if database setup        
+#check if database setup
 blastdb = os.path.join(FUNDB,'repeats.dmnd')
 if not os.path.isfile(blastdb):
     lib.log.error("Can't find Repeat Database at {:}, you may need to re-run funannotate setup".format(os.path.join(FUNDB, 'repeats.dmnd')))
@@ -176,6 +180,7 @@ AutoAug = os.path.join(AUGUSTUS_BASE, 'scripts', 'autoAug.pl')
 BAM2HINTS = os.path.join(AUGUSTUS_BASE, 'bin', 'bam2hints')
 GeneMark2GFF = os.path.join(parentdir, 'util', 'genemark_gtf2gff3.pl')
 
+# TODO: add Prodigal to list of programs to check for
 programs = ['exonerate', 'diamond', 'tbl2asn', 'gmes_petap.pl', 'rmblastn', 'BuildDatabase', 'RepeatModeler', 'RepeatMasker', GeneMark2GFF, AutoAug, 'bedtools', 'augustus', 'etraining', 'rmOutToGFF3.pl']
 programs = programs + args.aligners
 if 'blat' in args.aligners:
@@ -222,37 +227,48 @@ else:
     organism_name = organism
 organism_name = organism_name.replace(' ', '_')
 
-#check augustus species now, so that you don't get through script and then find out it is already in DB
-if not args.augustus_species:
-    aug_species = organism_name.lower()
-else:
-    aug_species = args.augustus_species
-augspeciescheck = lib.CheckAugustusSpecies(aug_species)
-if augspeciescheck and not args.augustus_gff:
-    if not args.maker_gff:
-        lib.log.error("Augustus training set for %s already exists. To re-train provide unique --augustus_species argument" % (aug_species))
+#set logic for which programs to run
+RUN_AUGUSTUS = True
+RUN_GENEMARK = True
+if args.prokaryote:
+    args.min_protlen = 20
+    if not args.run_augustus:
+        RUN_AUGUSTUS = False
+    if not args.run_genemark:
+        RUN_GENEMARK = False
 
-#check augustus functionality
-augustuscheck = lib.checkAugustusFunc(AUGUSTUS_BASE)
-system_os = lib.systemOS()
-if args.rna_bam:
-    if augustuscheck[1] == 0:
-        lib.log.error("ERROR: %s is not installed properly for BRAKER (check bam2hints compilation)" % augustuscheck[0])
-        sys.exit(1)
-              
-if not augspeciescheck: #means training needs to be done
-    if augustuscheck[2] == 0:
-        if 'MacOSX' in system_os:
-            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you should try manual compilation with gcc-6 of v3.2.1." % (augustuscheck[0], system_os))
-        elif 'Ubuntu' in system_os:
-            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you should install like this: `brew install augustus`." % (augustuscheck[0], system_os))
-        elif 'centos' in system_os:
-            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you may need a much older version ~ v3.03." % (augustuscheck[0], system_os))
-        else:
-            lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, this is a problem with Augustus compliatation, you may need to compile manually on %s." % (augustuscheck[0], system_os))
-            
-#if made it here output Augustus version
-lib.log.info("%s detected, version seems to be compatible with BRAKER and BUSCO" % augustuscheck[0])
+if RUN_AUGUSTUS:
+    #check augustus species now, so that you don't get through script and then find out it is already in DB
+    if not args.augustus_species:
+        aug_species = organism_name.lower()
+    else:
+        aug_species = args.augustus_species
+    augspeciescheck = lib.CheckAugustusSpecies(aug_species)
+    if augspeciescheck and not args.augustus_gff:
+        if not args.maker_gff:
+            lib.log.error("Augustus training set for %s already exists. To re-train provide unique --augustus_species argument" % (aug_species))
+
+    #check augustus functionality
+    augustuscheck = lib.checkAugustusFunc(AUGUSTUS_BASE)
+    system_os = lib.systemOS()
+    if args.rna_bam:
+        if augustuscheck[1] == 0:
+            lib.log.error("ERROR: %s is not installed properly for BRAKER (check bam2hints compilation)" % augustuscheck[0])
+            sys.exit(1)
+
+    if not augspeciescheck: #means training needs to be done
+        if augustuscheck[2] == 0:
+            if 'MacOSX' in system_os:
+                lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you should try manual compilation with gcc-6 of v3.2.1." % (augustuscheck[0], system_os))
+            elif 'Ubuntu' in system_os:
+                lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you should install like this: `brew install augustus`." % (augustuscheck[0], system_os))
+            elif 'centos' in system_os:
+                lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, on %s you may need a much older version ~ v3.03." % (augustuscheck[0], system_os))
+            else:
+                lib.log.error("ERROR: %s is not installed properly and this version not work with BUSCO, this is a problem with Augustus compliatation, you may need to compile manually on %s." % (augustuscheck[0], system_os))
+
+    #if made it here output Augustus version
+    lib.log.info("%s detected, version seems to be compatible with BRAKER and BUSCO" % augustuscheck[0])
 
 #check input files to make sure they are not empty, first check if multiple files passed to transcript/protein evidence
 input_checks = [args.input, args.masked_genome, args.repeatmasker_gff3, args.genemark_mod, args.exonerate_proteins, args.repeatmodeler_lib, args.pasa_gff, args.other_gff, args.rna_bam]
@@ -346,13 +362,14 @@ else:
     
 #setup augustus parallel command
 AUGUSTUS_PARALLEL = os.path.join(parentdir, 'bin', 'augustus_parallel.py')
+PRODIGAL_PARALLEL = os.path.join(parentdir, 'bin', 'prodigal_parallel.py')
 
 #EVM command line scripts
 Converter = os.path.join(EVM, 'EvmUtils', 'misc', 'augustus_GFF3_to_EVM_GFF3.pl')
 ExoConverter = os.path.join(EVM, 'EvmUtils', 'misc', 'exonerate_gff_to_alignment_gff3.pl')
 Converter2 = os.path.join(EVM, 'EvmUtils', 'misc', 'augustus_GTF_to_EVM_GFF3.pl')
 EVM2proteins = os.path.join(EVM, 'EvmUtils', 'gff3_file_to_proteins.pl')
-    
+
 #repeatmasker, run if not passed from command line
 if not os.path.isfile(MaskGenome):
     if not args.repeatmodeler_lib:
@@ -398,6 +415,7 @@ lib.log.info('Masked genome: {0:,}'.format(len(ContigSizes))+' scaffolds; {0:,}'
 longest10 = natsorted(ContigSizes.values(), reverse=True)[:10]
           
 #check for previous files and setup output files
+EVM_run = False  # initialize flag
 Predictions = os.path.join(args.out, 'predict_misc', 'gene_predictions.gff3')
 Exonerate = os.path.join(args.out, 'predict_misc', 'protein_alignments.gff3')
 Transcripts = os.path.join(args.out, 'predict_misc', 'transcript_alignments.gff3')
@@ -410,7 +428,7 @@ for i in evminput:
     if os.path.isfile(i):
         shutil.copyfile(i, i+'.old')
 
-#if maker_gff passed, use that info and move on, if pasa present than run EVM.
+#if maker_gff passed, use that info and move on, if pasa present then run EVM.
 if args.maker_gff:
     lib.log.info("Parsing Maker2 GFF for use in EVidence Modeler")
     maker2evm = os.path.join(parentdir, 'util', 'maker2evm.py')
@@ -556,78 +574,59 @@ else:
         else:
             lib.log.info("Existing RNA-seq BAM hints found {:}".format(hintsBAM))
 
-    #check for protein evidence/format as needed
-    p2g_out = os.path.join(args.out, 'predict_misc', 'exonerate.out')
-    prot_temp = os.path.join(args.out, 'predict_misc', 'proteins.combined.fa')
-    P2G = os.path.join(parentdir, 'bin', 'funannotate-p2g.py')
-    if not args.exonerate_proteins:
-        if args.protein_evidence:
-            if os.path.isfile(prot_temp):
-                shutil.copyfile(prot_temp, prot_temp+'.old')     
-            #clean up headers, etc
-            lib.cleanProteins(args.protein_evidence, prot_temp)
-            #run funannotate-p2g to map to genome
-            p2g_cmd = [sys.executable, P2G, '-p', prot_temp, '-g', MaskGenome, '-o', p2g_out, '--maxintron', str(args.max_intronlen), '--cpus', str(args.cpus), '--ploidy', str(args.ploidy), '-f', 'diamond', '--tblastn_out', os.path.join(args.out, 'predict_misc', 'p2g.diamond.out'), '--logfile', os.path.join(args.out, 'logfiles', 'funannotate-p2g.log')]
-            #check if protein evidence is same as old evidence
-            if not os.path.isfile(p2g_out):
-                lib.log.info("Mapping proteins to genome using Diamond blastx/Exonerate")
-                subprocess.call(p2g_cmd)
+    if not args.prokaryote:  # consider running for prokaryotes in future, would need to pass Prodigal + Exonerate to EVM
+        # check for protein evidence/format as needed
+        p2g_out = os.path.join(args.out, 'predict_misc', 'exonerate.out')
+        prot_temp = os.path.join(args.out, 'predict_misc', 'proteins.combined.fa')
+        P2G = os.path.join(parentdir, 'bin', 'funannotate-p2g.py')
+        if not args.exonerate_proteins:
+            if args.protein_evidence:
+                if os.path.isfile(prot_temp):
+                    shutil.copyfile(prot_temp, prot_temp + '.old')
+                # clean up headers, etc
+                lib.cleanProteins(args.protein_evidence, prot_temp)
+                # run funannotate-p2g to map to genome
+                p2g_cmd = [sys.executable, P2G, '-p', prot_temp, '-g', MaskGenome, '-o', p2g_out, '--maxintron',
+                           str(args.max_intronlen), '--cpus', str(args.cpus), '--ploidy', str(args.ploidy), '-f',
+                           'diamond', '--tblastn_out', os.path.join(args.out, 'predict_misc', 'p2g.diamond.out'),
+                           '--logfile', os.path.join(args.out, 'logfiles', 'funannotate-p2g.log')]
+                # check if protein evidence is same as old evidence
+                if not os.path.isfile(p2g_out):
+                    lib.log.info("Mapping proteins to genome using Diamond blastx/Exonerate")
+                    subprocess.call(p2g_cmd)
+                else:
+                    lib.log.info("Existing Exonerate alignments found {:}".format(p2g_out))
+                exonerate_out = os.path.abspath(p2g_out)
             else:
-                lib.log.info("Existing Exonerate alignments found {:}".format(p2g_out))
-            exonerate_out = os.path.abspath(p2g_out)
+                exonerate_out = False
         else:
-            exonerate_out = False
+            lib.log.info("Loading exonerate alignments {:}".format(args.exonerate_proteins))
+            shutil.copyfile(args.exonerate_proteins, p2g_out)
+            exonerate_out = os.path.abspath(p2g_out)
+
+        if exonerate_out:
+            Exonerate = os.path.join(args.out, 'predict_misc', 'protein_alignments.gff3')
+            with open(Exonerate, 'w') as output:
+                try:
+                    subprocess.call([ExoConverter, exonerate_out], stdout=output, stderr=FNULL)
+                except OSError:
+                    lib.log.error("$EVM_HOME variable is incorrect, please double-check: %s" % EVM)
+                    sys.exit(1)
+            Exonerate = os.path.abspath(Exonerate)
+            # now run exonerate2 hints for Augustus
+            exonerate2hints = os.path.join(AUGUSTUS_BASE, 'scripts', 'exonerate2hints.pl')
+            e2h_in = '--in=' + p2g_out
+            e2h_out = '--out=' + hintsP
+            e2h_minINT = '--minintronlen=' + str(args.min_intronlen)
+            e2h_maxINT = '--maxintronlen=' + str(args.max_intronlen)
+            cmd = [exonerate2hints, e2h_in, e2h_out, e2h_minINT, e2h_maxINT]
+            lib.runSubprocess(cmd, '.', lib.log)
     else:
-    	lib.log.info("Loading exonerate alignments {:}".format(args.exonerate_proteins))
-        shutil.copyfile(args.exonerate_proteins, p2g_out)
-        exonerate_out = os.path.abspath(p2g_out)
+        exonerate_out = False
 
-    if exonerate_out:
-        Exonerate = os.path.join(args.out, 'predict_misc', 'protein_alignments.gff3')
-        with open(Exonerate, 'w') as output:
-            try:
-                subprocess.call([ExoConverter, exonerate_out], stdout = output, stderr = FNULL)
-            except OSError:
-                lib.log.error("$EVM_HOME variable is incorrect, please double-check: %s" % EVM)
-                sys.exit(1)
-        Exonerate = os.path.abspath(Exonerate)
-        #now run exonerate2 hints for Augustus
-        exonerate2hints = os.path.join(AUGUSTUS_BASE, 'scripts', 'exonerate2hints.pl')
-        e2h_in = '--in='+p2g_out
-        e2h_out = '--out='+hintsP
-        e2h_minINT = '--minintronlen='+str(args.min_intronlen)
-        e2h_maxINT = '--maxintronlen='+str(args.max_intronlen)
-        cmd = [exonerate2hints, e2h_in, e2h_out, e2h_minINT, e2h_maxINT]
-        lib.runSubprocess(cmd, '.', lib.log)
+    Augustus, GeneMark, Prodigal = (None,)*3
 
-    #combine hints for Augustus
-    allhintstmp = os.path.join(args.out, 'predict_misc', 'hints.all.tmp')
-    if os.path.isfile(hintsP) or os.path.isfile(hintsE) or os.path.isfile(hintsBAM) or os.path.isfile(hintsM):
-        if os.path.isfile(allhintstmp):
-            os.remove(allhintstmp)
-        with open(allhintstmp, 'a') as out:
-            if os.path.isfile(hintsP):
-                with open(hintsP) as input:
-                    out.write(input.read())
-            if os.path.isfile(hintsE):
-                with open(hintsE) as input2:
-                    out.write(input2.read())
-            if os.path.isfile(hintsBAM):
-                with open(hintsBAM) as input3:
-                    out.write(input3.read())
-            if os.path.isfile(hintsM):
-                with open(hintsM) as input4:
-                    out.write(input4.read())
-    #now sort hints file, and join multiple hints_all
-    allhintstmp_sort = os.path.join(args.out, 'predict_misc', 'hints.all.sort.tmp')
-    lib.sortHints(allhintstmp, allhintstmp_sort)
-    #lib.joinFilterHints(os.path.join(AUGUSTUS_BASE, 'scripts', 'join_mult_hints.pl'),os.path.join(parentdir, 'util', 'BRAKER', 'filterIntronsFindStrand.pl'), allhintstmp_sort, hints_all)
-    cmd = ['perl', os.path.join(AUGUSTUS_BASE, 'scripts', 'join_mult_hints.pl')]
-    lib.runSubprocess5(cmd, '.', lib.log, allhintstmp_sort, hints_all)
-
-    Augustus, GeneMark = (None,)*2
-
-    #Walk thru data available and determine best approach. 
+    #Walk thru data available and determine best approach.
     if args.genemark_gtf:
         #convert the predictors to EVM format and merge
         #convert GeneMark
@@ -649,6 +648,15 @@ else:
         Augustus = os.path.join(args.out, 'predict_misc', 'augustus.evm.gff3')
         cmd = ['perl', Converter, aug_out]
         lib.runSubprocess2(cmd, '.', lib.log, Augustus)
+
+    #if args.prodigal_gff:
+        # TODO: write converter script for typical Prodigal output (i.e., not run via prodigal_parallel.py
+        # convert Prodigal
+        # prodigal_out = args.prodigal_gff
+        # Prodigal = os.path.join(args.out, 'predict_misc', 'prodigal.evm.gff3')
+        # cmd = ['perl', Converter, prodigal_out]
+        # lib.runSubprocess2(cmd, '.', lib.log, Prodigal)
+        # TODO: decide how to handle proteins.fa input if Prodigal run separately
 
     if args.rna_bam and not any([GeneMark, Augustus]) and args.braker:
         #now need to run BRAKER1
@@ -693,7 +701,7 @@ else:
             with open(GeneMarkTemp, 'rU') as input:
                 lines = input.read().replace("Augustus","GeneMark")
                 output.write(lines)
-    
+
     if args.pasa_gff and not Augustus:
         #setup final output
         aug_out = os.path.join(args.out, 'predict_misc', 'augustus.gff3')
@@ -720,10 +728,10 @@ else:
             cmd = [GFF2GB, finalModels, MaskGenome, '600', trainingset]
             lib.runSubprocess(cmd, '.', lib.log)
             lib.trainAugustus(AUGUSTUS_BASE, aug_species, trainingset, MaskGenome, args.out, args.cpus, numTrainingSet, args.optimize_augustus)
-                
+
         #now run whole genome Augustus using trained parameters.
         lib.log.info("Running Augustus gene prediction")
-        if not os.path.isfile(aug_out):     
+        if not os.path.isfile(aug_out):
             if os.path.isfile(hints_all):
                 cmd = [AUGUSTUS_PARALLEL, '--species', aug_species, '--hints', hints_all, '-i', MaskGenome, '-o', aug_out, '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'augustus-parallel.log')]
             else:
@@ -733,8 +741,8 @@ else:
         Augustus = os.path.join(args.out, 'predict_misc', 'augustus.evm.gff3')
         cmd = ['perl', Converter, aug_out]
         lib.runSubprocess2(cmd, '.', lib.log, Augustus)
-   
-    if not GeneMark:
+
+    if RUN_GENEMARK and not GeneMark:  # TODO: determine which parameters need to be altered if args.prokaryote
         GeneMarkGFF3 = os.path.join(args.out, 'predict_misc', 'genemark.gff')
         #count contigs
         num_contigs = lib.countfasta(MaskGenome)
@@ -806,11 +814,43 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
                         if not contig in ContigSizes:
                             Contigsmissing.append(contig)
                         else:
-                            output.write(line)                              
+                            output.write(line)
         if len(Contigsmissing) > 0:
             lib.log.error("Error: GeneMark contig headers do not match input:\n%s" % ','.join(Contigsmissing))
+        # GeneMark can fail if you try to pass a single contig, check file length
+        GM_check = lib.line_count(GeneMark)
+        gmc = 1
+        if GM_check < 3:
+            gmc = 0
+            lib.log.error(
+                "GeneMark predictions failed. If you can run GeneMark outside of funannotate, then pass the results to --genemark_gtf, proceeding with only Augustus predictions.")
 
-    if not Augustus: 
+    if RUN_AUGUSTUS and not Augustus:  # TODO: determine which parameters need to be altered if args.prokaryote
+        #combine hints for Augustus
+        allhintstmp = os.path.join(args.out, 'predict_misc', 'hints.all.tmp')
+        if os.path.isfile(hintsP) or os.path.isfile(hintsE) or os.path.isfile(hintsBAM) or os.path.isfile(hintsM):
+            if os.path.isfile(allhintstmp):
+                os.remove(allhintstmp)
+            with open(allhintstmp, 'a') as out:
+                if os.path.isfile(hintsP):
+                    with open(hintsP) as input:
+                        out.write(input.read())
+                if os.path.isfile(hintsE):
+                    with open(hintsE) as input2:
+                        out.write(input2.read())
+                if os.path.isfile(hintsBAM):
+                    with open(hintsBAM) as input3:
+                        out.write(input3.read())
+                if os.path.isfile(hintsM):
+                    with open(hintsM) as input4:
+                        out.write(input4.read())
+        # now sort hints file, and join multiple hints_all
+        allhintstmp_sort = os.path.join(args.out, 'predict_misc', 'hints.all.sort.tmp')
+        lib.sortHints(allhintstmp, allhintstmp_sort)
+        # lib.joinFilterHints(os.path.join(AUGUSTUS_BASE, 'scripts', 'join_mult_hints.pl'),os.path.join(parentdir, 'util', 'BRAKER', 'filterIntronsFindStrand.pl'), allhintstmp_sort, hints_all)
+        cmd = ['perl', os.path.join(AUGUSTUS_BASE, 'scripts', 'join_mult_hints.pl')]
+        lib.runSubprocess5(cmd, '.', lib.log, allhintstmp_sort, hints_all)
+
         aug_out = os.path.join(args.out, 'predict_misc', 'augustus.gff3')
         busco_log = os.path.join(args.out, 'logfiles', 'busco.log')
         busco_final = os.path.join(args.out, 'predict_misc', 'busco.final.gff3')
@@ -851,12 +891,12 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
                     if os.path.isdir(os.path.join(args.out, 'predict_misc', 'busco')):
                         shutil.rmtree(os.path.join(args.out, 'predict_misc', 'busco'))
                     os.rename('busco', os.path.join(args.out, 'predict_misc', 'busco'))
-            
+
                 #open output and pull locations to make bed file
                 busco_bed = os.path.join(args.out, 'predict_misc', 'buscos.bed')
                 busco_fulltable = os.path.join(args.out, 'predict_misc', 'busco', 'run_'+aug_species, 'full_table_'+aug_species+'.tsv')
                 busco_complete = lib.parseBUSCO2genome(busco_fulltable, args.ploidy, ContigSizes, busco_bed)
-            
+
                 #proper training files exist, now run EVM on busco models to get high quality predictions.
                 lib.log.info('{0:,}'.format(len(busco_complete)) +' valid BUSCO predictions found, now formatting for EVM')
 
@@ -981,202 +1021,216 @@ If you can run GeneMark outside funannotate you can add with --genemark_gtf opti
         Augustus = os.path.join(args.out, 'predict_misc', 'augustus.evm.gff3')
         cmd = ['perl', Converter, aug_out]
         lib.runSubprocess2(cmd, '.', lib.log, Augustus)
-        
-    #just double-check that you've gotten here and both Augustus/GeneMark are finished
-    if not any([Augustus, GeneMark]):
-        lib.log.error("Augustus or GeneMark prediction is missing, check log files for errors")
+
+        # make sure Augustus finished successfully
+        if not lib.checkannotations(Augustus):
+            lib.log.error("Augustus prediction failed, check `logfiles/augustus-parallel.log`")
+            sys.exit(1)
+
+        #if hints used for Augustus, get high quality models > 90% coverage to pass to EVM
+        if os.path.isfile(hints_all) or args.rna_bam:
+            lib.log.info("Pulling out high quality Augustus predictions")
+            hiQ_models = []
+            with open(aug_out, 'rU') as augustus:
+                for pred in lib.readBlocks(augustus, '# start gene'):
+                    values = []
+                    geneID = ''
+                    support = ''
+                    if pred[0].startswith('# This output'):
+                        continue
+                    if pred[0].startswith('##gff-version 3'):
+                        continue
+                    for line in pred:
+                        line = line.replace('\n', '')
+                        if line.startswith('# start gene'):
+                            geneID = line.split(' ')[-1]
+                            values.append(geneID)
+                        if not args.rna_bam:
+                            if line.startswith('# % of transcript supported by hints'):
+                                support = line.split(' ')[-1]
+                                values.append(support)
+                        else: #if BRAKER is run then only intron CDS evidence is passed, so get models that fullfill that check
+                            if line.startswith('# CDS introns:'):
+                                intronMatch = line.split(' ')[-1]
+                                try:
+                                    support = int(intronMatch.split('/')[0]) / float(intronMatch.split('/')[1]) * 100
+                                except ZeroDivisionError:
+                                    support = 0
+                                values.append(support)
+                    if float(values[1]) > 89: #greater than ~90% of exons supported, this is really stringent which is what we want here, as we are going to weight these models 5 to 1 over genemark
+                        hiQ_models.append(values[0])
+
+            #now open evm augustus and rename models that are HiQ
+            HiQ = set(hiQ_models)
+            lib.log.info("Found {:,} high quality predictions from Augustus (>90% exon evidence)".format(len(HiQ)))
+            os.rename(Augustus, Augustus+'.bak')
+            with open(Augustus, 'w') as HiQ_out:
+                with open(Augustus+'.bak', 'rU') as evm_aug:
+                    for line in evm_aug:
+                        if line.startswith('\n'):
+                            HiQ_out.write(line)
+                        else:
+                            contig, source, feature, start, end, score, strand, phase, attributes = line.split('\t')
+                            info = attributes.split(';')
+                            ID = None
+                            for x in info:
+                                if x.startswith('ID='):
+                                    ID = x.replace('-', '.')
+                            if ID:
+                                IDparts = ID.split('.')
+                                for y in IDparts:
+                                    if y.startswith('g'):
+                                        ID = y
+                            if feature == 'gene':
+                                if ID in HiQ:
+                                    HiQ_out.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' % (contig,'HiQ',feature,start,end,score,strand,phase,attributes))
+                                else:
+                                    HiQ_out.write(line)
+                            elif feature == 'mRNA' or feature == 'exon' or feature == 'CDS':
+                                ID = ID.split('.')[0]
+                                if ID in HiQ:
+                                    HiQ_out.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' % (contig,'HiQ',feature,start,end,score,strand,phase,attributes))
+                                else:
+                                    HiQ_out.write(line)
+
+    if args.prokaryote and not Prodigal:
+        Prodigal = os.path.join(args.out, 'predict_misc', 'prodigal.gff3')
+        Prodigal_proteins = os.path.join(args.out, 'predict_misc', 'prodigal.proteins.fa')
+        if not os.path.isfile(Prodigal):
+            lib.log.info("Running Prodigal gene prediction")
+            cmd = [PRODIGAL_PARALLEL, '-i', MaskGenome, '-o', Prodigal, '-p', Prodigal_proteins, '-f', 'gff', '--cpus', str(args.cpus), '--logfile', os.path.join(args.out, 'logfiles', 'prodigal-parallel.log')]
+            subprocess.call(cmd)
+        #else:
+        #    lib.log.info("Existing Prodigal annotations found {:}".format(aug_out))
+        # TODO: move formatting changes from prodigal_parallel.py to the converter script
+        #Prodigal = os.path.join(args.out, 'predict_misc', 'prodigal.evm.gff3')
+        #cmd = ['perl', Converter, aug_out]
+        #lib.runSubprocess2(cmd, '.', lib.log, Prodigal)
+
+    #just double-check that you've gotten here and at least one program has finished
+    if not any([Augustus, GeneMark, Prodigal]):
+        lib.log.error("Prodigal, Augustus or GeneMark prediction is missing, check log files for errors")
         sys.exit(1)
-    
-    #GeneMark can fail if you try to pass a single contig, check file length
-    GM_check = lib.line_count(GeneMark)
-    gmc = 1
-    if GM_check < 3:
-        gmc = 0
-        lib.log.error("GeneMark predictions failed. If you can run GeneMark outside of funannotate, then pass the results to --genemark_gtf, proceeding with only Augustus predictions.")
-    
-    #make sure Augustus finished successfully
-    if not lib.checkannotations(Augustus):
-        lib.log.error("Augustus prediction failed, check `logfiles/augustus-parallel.log`")
-        sys.exit(1)
-    
-    #if hints used for Augustus, get high quality models > 90% coverage to pass to EVM
-    if os.path.isfile(hints_all) or args.rna_bam:
-        lib.log.info("Pulling out high quality Augustus predictions")
-        hiQ_models = []
-        with open(aug_out, 'rU') as augustus:
-            for pred in lib.readBlocks(augustus, '# start gene'):
-                values = []
-                geneID = ''
-                support = ''
-                if pred[0].startswith('# This output'):
-                    continue
-                if pred[0].startswith('##gff-version 3'):
-                    continue
-                for line in pred:
-                    line = line.replace('\n', '')
-                    if line.startswith('# start gene'):
-                        geneID = line.split(' ')[-1]
-                        values.append(geneID)
-                    if not args.rna_bam:
-                        if line.startswith('# % of transcript supported by hints'):
-                            support = line.split(' ')[-1]
-                            values.append(support)
-                    else: #if BRAKER is run then only intron CDS evidence is passed, so get models that fullfill that check
-                        if line.startswith('# CDS introns:'):
-                            intronMatch = line.split(' ')[-1]
-                            try:
-                                support = int(intronMatch.split('/')[0]) / float(intronMatch.split('/')[1]) * 100
-                            except ZeroDivisionError:
-                                support = 0
-                            values.append(support)
-                if float(values[1]) > 89: #greater than ~90% of exons supported, this is really stringent which is what we want here, as we are going to weight these models 5 to 1 over genemark
-                    hiQ_models.append(values[0])
 
-        #now open evm augustus and rename models that are HiQ
-        HiQ = set(hiQ_models)
-        lib.log.info("Found {:,} high quality predictions from Augustus (>90% exon evidence)".format(len(HiQ)))
-        os.rename(Augustus, Augustus+'.bak')
-        with open(Augustus, 'w') as HiQ_out:
-            with open(Augustus+'.bak', 'rU') as evm_aug:
-                for line in evm_aug:
-                    if line.startswith('\n'):
-                        HiQ_out.write(line)
-                    else:
-                        contig, source, feature, start, end, score, strand, phase, attributes = line.split('\t')
-                        info = attributes.split(';')
-                        ID = None
-                        for x in info:
-                            if x.startswith('ID='):
-                                ID = x.replace('-', '.')
-                        if ID:
-                            IDparts = ID.split('.')
-                            for y in IDparts:
-                                if y.startswith('g'):
-                                    ID = y
-                        if feature == 'gene':
-                            if ID in HiQ:
-                                HiQ_out.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' % (contig,'HiQ',feature,start,end,score,strand,phase,attributes))
-                            else:
-                                HiQ_out.write(line)
-                        elif feature == 'mRNA' or feature == 'exon' or feature == 'CDS':
-                            ID = ID.split('.')[0]
-                            if ID in HiQ:
-                                HiQ_out.write('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' % (contig,'HiQ',feature,start,end,score,strand,phase,attributes))
-                            else:
-                                HiQ_out.write(line)
-
-    #EVM related input tasks, find all predictions and concatenate together
-    pred_in = [Augustus, GeneMark]
-    if args.pasa_gff:
-        pred_in.append(PASA_GFF)
-    if args.other_gff:
-        pred_in.append(OTHER_GFF)
-    
-    #write gene predictions file
-    with open(Predictions, 'w') as output:
-        for f in sorted(pred_in):
-            with open(f, 'rU') as input:
-            	for line in input:
-            		if not line.startswith('#'):
-                		output.write(line)
-
-    #set Weights file dependent on which data is present.
-    Weights = os.path.join(args.out, 'predict_misc', 'weights.evm.txt')
-    with open(Weights, 'w') as output:
-        output.write("ABINITIO_PREDICTION\tAugustus\t1\n")
-        output.write("ABINITIO_PREDICTION\tGeneMark\t1\n")
-        if os.path.isfile(hints_all):
-            output.write("OTHER_PREDICTION\tHiQ\t5\n")
+    predictions_run = [x for x in [Augustus, GeneMark, Prodigal] if x is not None]
+    if len(predictions_run) > 1:  # if more than one program was run, use EVM
+        EVM_run = True
+        #EVM related input tasks, find all predictions and concatenate together
+        pred_in = predictions_run
         if args.pasa_gff:
-            output.write("OTHER_PREDICTION\tpasa_pred\t%s\n" % PASA_weight)
-        if exonerate_out:
-            output.write("PROTEIN\texonerate\t1\n")
-        if Transcripts:
-            output.write("TRANSCRIPT\tgenome\t1\n")
+            pred_in.append(PASA_GFF)
         if args.other_gff:
-            output.write("OTHER_PREDICTION\tother_pred\t%s\n" % OTHER_weight)
+            pred_in.append(OTHER_GFF)
 
-#total up Predictions, get source counts
-EVMtotal, EVMprodigal, EVMaugustus, EVMgenemark, EVMhiq, EVMpasa, EVMother = lib.countEVMpredictions(Predictions)
-lib.log.info('Summary of gene models passed to EVM (weights):\n\
--------------------------------------------------------\n\
-Augustus models (1):\t{:^>,} \n\
-GeneMark models (1):\t{:^>,}\n\
-Hi-Q models (5):\t{:^>,}\n\
-PASA gene models ({:}):\t{:^>,}\n\
-Other gene models ({:}):\t{:^>,}\n\
-Total gene models:\t{:^>,}\n\
--------------------------------------------------------'.format(EVMaugustus,EVMgenemark,EVMhiq,PASA_weight,EVMpasa,OTHER_weight,EVMother,EVMtotal))
+        #write gene predictions file
+        with open(Predictions, 'w') as output:
+            for f in sorted(pred_in):
+                with open(f, 'rU') as input:
+                    for line in input:
+                        if not line.startswith('#'):
+                            output.write(line)
 
-if args.keep_evm and os.path.isfile(EVM_out):
-    lib.log.info("Using existing EVM predictions")
-else:
-    #setup EVM run
-    EVM_script = os.path.join(parentdir, 'bin', 'funannotate-runEVM.py')
+        #set Weights file dependent on which data is present.
+        Weights = os.path.join(args.out, 'predict_misc', 'weights.evm.txt')
+        with open(Weights, 'w') as output:
+            if Prodigal: output.write("ABINITIO_PREDICTION\tProdigal\t1\n")
+            if Augustus: output.write("ABINITIO_PREDICTION\tAugustus\t1\n")
+            if GeneMark: output.write("ABINITIO_PREDICTION\tGeneMark\t1\n")
+            if os.path.isfile(hints_all): output.write("OTHER_PREDICTION\tHiQ\t5\n")
+            if args.pasa_gff: output.write("OTHER_PREDICTION\tpasa_pred\t%s\n" % PASA_weight)
+            if exonerate_out: output.write("PROTEIN\texonerate\t1\n")
+            if Transcripts: output.write("TRANSCRIPT\tgenome\t1\n")
+            if args.other_gff: output.write("OTHER_PREDICTION\tother_pred\t%s\n" % OTHER_weight)
 
-    #check if EVM input is identical as before
-    if os.path.isfile(Predictions+'.old'):
-        if not lib.sha256_check(Predictions, Predictions+'.old'):
-            #need to run EVM again, so delete output
-            if os.path.isfile(EVM_out):
-                os.remove(EVM_out)
+        #total up Predictions, get source counts
+        EVMtotal, EVMprodigal, EVMaugustus, EVMgenemark, EVMhiq, EVMpasa, EVMother = lib.countEVMpredictions(Predictions)
+        lib.log.info('Summary of gene models passed to EVM (weights):\n\
+        -------------------------------------------------------\n\
+        Prodigal models (1):\t{:^>,} \n\
+        Augustus models (1):\t{:^>,} \n\
+        GeneMark models (1):\t{:^>,}\n\
+        Hi-Q models (5):\t{:^>,}\n\
+        PASA gene models ({:}):\t{:^>,}\n\
+        Other gene models ({:}):\t{:^>,}\n\
+        Total gene models:\t{:^>,}\n\
+        -------------------------------------------------------'.format(EVMprodigal,EVMaugustus,EVMgenemark,EVMhiq,PASA_weight,EVMpasa,OTHER_weight,EVMother,EVMtotal))
+
+        if args.keep_evm and os.path.isfile(EVM_out):
+            lib.log.info("Using existing EVM predictions")
         else:
-            lib.log.info("Using existing EVM run data")
+            #setup EVM run
+            EVM_script = os.path.join(parentdir, 'bin', 'funannotate-runEVM.py')
 
-    #get absolute paths for everything
-    Weights = os.path.abspath(Weights)
-    EVM_out = os.path.abspath(EVM_out)
-    Predictions = os.path.abspath(Predictions)
+            #check if EVM input is identical as before
+            if os.path.isfile(Predictions+'.old'):
+                if not lib.sha256_check(Predictions, Predictions+'.old'):
+                    #need to run EVM again, so delete output
+                    if os.path.isfile(EVM_out):
+                        os.remove(EVM_out)
+                else:
+                    lib.log.info("Using existing EVM run data")
 
-    #parse entire EVM command to script
-    if Exonerate and Transcripts:
-        Transcripts = os.path.abspath(Transcripts)
-        Exonerate = os.path.abspath(Exonerate)
-        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--protein_alignments', Exonerate, '--transcript_alignments', Transcripts, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
-    elif not Exonerate and Transcripts:
-        Transcripts = os.path.abspath(Transcripts)
-        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'),str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--transcript_alignments', Transcripts, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
-    elif not Transcripts and Exonerate:
-        Exonerate = os.path.abspath(Exonerate)
-        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--protein_alignments', Exonerate, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
-    elif not any([Transcripts,Exonerate]):
-        evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+            #get absolute paths for everything
+            Weights = os.path.abspath(Weights)
+            EVM_out = os.path.abspath(EVM_out)
+            Predictions = os.path.abspath(Predictions)
 
-    #run EVM
-    if not os.path.isfile(EVM_out):
-        subprocess.call(evm_cmd)
-    try:
-        total = lib.countGFFgenes(EVM_out)
-    except IOError:
-        lib.log.error("EVM did not run correctly, output file missing")
-        sys.exit(1)
-    #check number of gene models, if 0 then failed, delete output file for re-running
-    if total < 1:
-        lib.log.error("Evidence modeler has failed, exiting")
-        os.remove(EVM_out)
-        sys.exit(1)
+            #parse entire EVM command to script
+            if Exonerate and Transcripts:
+                Transcripts = os.path.abspath(Transcripts)
+                Exonerate = os.path.abspath(Exonerate)
+                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--protein_alignments', Exonerate, '--transcript_alignments', Transcripts, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+            elif not Exonerate and Transcripts:
+                Transcripts = os.path.abspath(Transcripts)
+                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'),str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--transcript_alignments', Transcripts, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+            elif not Transcripts and Exonerate:
+                Exonerate = os.path.abspath(Exonerate)
+                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--protein_alignments', Exonerate, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+            elif not any([Transcripts,Exonerate]):
+                evm_cmd = [sys.executable, EVM_script, os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'), str(args.cpus), '--genome', MaskGenome, '--gene_predictions', Predictions, '--weights', Weights, '--min_intron_length', str(args.min_intronlen), EVM_out]
+
+            #run EVM
+            if not os.path.isfile(EVM_out):
+                subprocess.call(evm_cmd)
+            try:
+                total = lib.countGFFgenes(EVM_out)
+            except IOError:
+                lib.log.error("EVM did not run correctly, output file missing")
+                sys.exit(1)
+            #check number of gene models, if 0 then failed, delete output file for re-running
+            if total < 1:
+                lib.log.error("Evidence modeler has failed, exiting")
+                os.remove(EVM_out)
+                sys.exit(1)
+            else:
+                lib.log.info('{0:,}'.format(total) + ' total gene models from EVM')
+
+            #move EVM folder to predict folder
+            if os.path.isdir('EVM_tmp'):
+                if os.path.isdir(os.path.join(args.out, 'predict_misc', 'EVM')):
+                    shutil.rmtree(os.path.join(args.out, 'predict_misc', 'EVM'))
+                os.rename('EVM_tmp', os.path.join(args.out, 'predict_misc', 'EVM'))
+
+        #get protein fasta files
+        evmCount = lib.countGFFgenes(EVM_out)
+        lib.log.info("Generating protein fasta files from {:,} EVM models".format(evmCount))
+        cmd = [os.path.join(EVM, 'EvmUtils', 'gff3_file_to_proteins.pl'), EVM_out, MaskGenome]
+        EVM_proteins = os.path.join(args.out, 'predict_misc', 'evm.round1.proteins.fa')
+        with open(EVM_proteins, 'w') as evmprots:
+            lib.log.debug(' '.join(cmd))
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=1)
+            with proc.stdout:
+                for line in iter(proc.stdout.readline, b''):
+                    if line.startswith('>'):
+                        line = line.split(' ')[0] + '\n'
+                    evmprots.write('%s' % line)
+
+    # If only Prodigal was run, substitute prodigal.gff for evm.round1.gff and prodigal.proteins.fa for evm.round1.proteins.fa
+    # Leave variable names with EVM for now, even if EVM not run
     else:
-        lib.log.info('{0:,}'.format(total) + ' total gene models from EVM')
-
-    #move EVM folder to predict folder
-    if os.path.isdir('EVM_tmp'):
-        if os.path.isdir(os.path.join(args.out, 'predict_misc', 'EVM')):
-            shutil.rmtree(os.path.join(args.out, 'predict_misc', 'EVM'))
-        os.rename('EVM_tmp', os.path.join(args.out, 'predict_misc', 'EVM'))
-
-#get protein fasta files
-evmCount = lib.countGFFgenes(EVM_out)
-lib.log.info("Generating protein fasta files from {:,} EVM models".format(evmCount))
-cmd = [os.path.join(EVM, 'EvmUtils', 'gff3_file_to_proteins.pl'), EVM_out, MaskGenome]
-EVM_proteins = os.path.join(args.out, 'predict_misc', 'evm.round1.proteins.fa')
-with open(EVM_proteins, 'w') as evmprots:
-    lib.log.debug(' '.join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=1)
-    with proc.stdout:
-        for line in iter(proc.stdout.readline, b''):
-            if line.startswith('>'):
-                line = line.split(' ')[0] + '\n'
-            evmprots.write('%s' % line)
+        EVM_out = os.path.join(args.out, 'predict_misc', 'prodigal.evm.gff3')
+        lib.cleanProdigalGFF(Prodigal, EVM_out)
+        EVM_proteins = os.path.join(args.out, 'predict_misc', 'prodigal.proteins.fa')
 
 #now filter bad models
 lib.log.info("now filtering out bad gene models (< %i aa in length, transposable elements, etc)." % args.min_protlen)
@@ -1219,14 +1273,18 @@ version_file = os.path.join(args.out, 'predict_misc', 'versions.txt')
 cmd = ['funannotate', 'check', '--show-versions']
 lib.runSubprocess2(cmd, '.', lib.log, version_file)
 version_dict = lib.createPredictVersionDict(version_file)
-# now generate source_dict from evm.out file in each subfolder of predict_misc/EVM
-evm_directory = os.path.join(args.out, 'predict_misc', 'EVM')
-source_dict = lib.createEVMsourcedict(evm_directory)
+
 # update tbl file - save old
 old_tbl_file = os.path.join(args.out, 'predict_misc', 'genome_old.tbl')
 shutil.copyfile(tbl_file, old_tbl_file)
 new_tbl_file = os.path.join(gag3dir, 'genome.tbl')
-lib.updateTBL_genepred(old_tbl_file, source_dict, version_dict, new_tbl_file)
+if EVM_run:
+    evm_directory = os.path.join(args.out, 'predict_misc', 'EVM')
+    source_dict = lib.createEVMsourcedict(evm_directory)  # generate source_dict from evm.out file in each subfolder of predict_misc/EVM
+    lib.updateTBL_genepred(old_tbl_file, source_dict, version_dict, new_tbl_file)
+else:  # only Prodigal was run
+    lib.updateTBL_genepred_single(old_tbl_file, 'Prodigal', version_dict, new_tbl_file)
+
 
 #setup final output files
 final_fasta = os.path.join(args.out, 'predict_results', organism_name + '.scaffolds.fa')
@@ -1242,9 +1300,9 @@ final_fixes = os.path.join(args.out, 'predict_results', organism_name+'.models-n
 #run tbl2asn in new directory directory
 #setup SBT file
 SBT = os.path.join(parentdir, 'lib', 'test.sbt')
-discrep = os.path.join(args.out, 'predict_results', organism_name + '.discrepency.report.txt')
+discrep = os.path.join(args.out, 'predict_results', organism_name + '.discrepancy.report.txt')
 lib.log.info("Converting to final Genbank format")
-tbl2$asn_cmd = lib.runtbl2asn(gag3dir, SBT, discrep, args.species, args.isolate, args.strain, args.tbl2asn, 1, False)
+tbl2asn_cmd = lib.runtbl2asn(gag3dir, SBT, discrep, args.species, args.isolate, args.strain, args.tbl2asn, 1, args.prokaryote)
 
 #retrieve files/reorganize
 #shutil.copyfile(os.path.join(gag3dir, 'genome.gff'), final_gff)
@@ -1288,8 +1346,8 @@ Annotate Genome: \nfunannotate annotate -i {:} --cpus {:} --sbt yourSBTfile.txt\
             args.cpus))
 
 #clean up intermediate folders
-if os.path.isfile('discrepency.report.txt'):
-    os.rename('discrepency.report.txt', os.path.join(gag3dir, 'discrepency.report.txt'))
+if os.path.isfile('discrepancy.report.txt'):
+    os.rename('discrepancy.report.txt', os.path.join(gag3dir, 'discrepancy.report.txt'))
 if os.path.isfile('funannotate-EVM.log'):
     os.rename('funannotate-EVM.log', os.path.join(args.out, 'logfiles', 'funannotate-EVM.log'))
 if os.path.isfile('funannotate-p2g.log'):
