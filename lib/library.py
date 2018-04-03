@@ -1623,7 +1623,8 @@ def updateTBL(input, annotDict, output):
                 if gene[0].startswith('>Feature'):
                     outfile.write(''.join(gene))
                 else:
-                    locusTag,locusTagIndex,LocusType,geneAnnot,transcriptAnnot = (None,)*5
+                    locusTag,locusTagIndex,LocusType = (None,)*3
+                    geneAnnot, transcriptAnnot = {}, {}
                     for i,x in enumerate(gene):
                         if x.startswith('\t\t\tlocus_tag\t'):
                             locusTag = x.split('\t')[-1].rstrip()
@@ -1634,38 +1635,38 @@ def updateTBL(input, annotDict, output):
                     elif locusType == 'mRNA':
                         if locusTag in annotDict:
                             geneAnnot = annotDict.get(locusTag)
-                            for line in gene:
-                                if line.startswith('\t\t\tlocus_tag\t'):
-                                    if 'name' in geneAnnot:
-                                        outfile.write('\t\t\tgene\t%s\n' % geneAnnot['name'][0])
+                        for line in gene:
+                            if line.startswith('\t\t\tlocus_tag\t'):
+                                if 'name' in geneAnnot:
+                                    outfile.write('\t\t\tgene\t%s\n' % geneAnnot['name'][0])
+                                outfile.write(line)
+                            elif line.startswith('\t\t\tproduct\t'):
+                                if not 'product' in geneAnnot:
                                     outfile.write(line)
-                                elif line.startswith('\t\t\tproduct\t'):
-                                    if not 'product' in geneAnnot:
-                                        outfile.write(line)
-                                elif line.startswith('\t\t\ttranscript_id\t'):
-                                    ID = line.split('|')[-1]
-                                    ID = ID.split('_mrna')[0]
-                                    transcriptNum = int(ID.split('-T')[-1])
-                                    if ID in annotDict:
-                                        transcriptAnnot = annotDict.get(ID)
-                                    if 'product' in geneAnnot:
-                                        Description = geneAnnot['product'][0]
-                                        if transcriptNum > 1:
-                                            Description = Description + ', variant {:}'.format(transcriptNum)
-                                        outfile.write('\t\t\tproduct\t%s\n' % Description)
-                                    outfile.write(line)
-                                elif line.startswith('\t\t\tcodon_start\t'):
-                                    outfile.write(line)
-                                    if transcriptAnnot:
-                                        for item in transcriptAnnot:
-                                            if item == 'name' or item == 'product':
-                                                continue
-                                            for x in transcriptAnnot[item]:
-                                                outfile.write('\t\t\t%s\t%s\n' % (item, x))
-                                else:
-                                    outfile.write(line)
-                        else:
-                            outfile.write(''.join(gene))
+                            elif line.startswith('\t\t\ttranscript_id\t'):
+                                ID = line.split('|')[-1]
+                                ID = ID.split('_mrna')[0]
+                                transcriptNum = int(ID.split('-T')[-1])
+                                if ID in annotDict:
+                                    transcriptAnnot = annotDict.get(ID)
+                                if 'product' in geneAnnot:
+                                    Description = geneAnnot['product'][0]
+                                    if transcriptNum > 1:
+                                        Description = Description + ', variant {:}'.format(transcriptNum)
+                                    outfile.write('\t\t\tproduct\t%s\n' % Description)
+                                outfile.write(line)
+                            elif line.startswith('\t\t\tcodon_start\t'):
+                                outfile.write(line)
+                                if transcriptAnnot:
+                                    for item in transcriptAnnot:
+                                        if item == 'name' or item == 'product':
+                                            continue
+                                        for x in transcriptAnnot[item]:
+                                            outfile.write('\t\t\t%s\t%s\n' % (item, x))
+                            else:
+                                outfile.write(line)
+                    else:
+                        outfile.write(''.join(gene))
 
 def convertgff2tbl_OLD(gff, gffskip, prefix, fasta, proteins, tblout):
     from collections import OrderedDict

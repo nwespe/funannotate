@@ -35,6 +35,7 @@ parser.add_argument('-t','--tbl2asn', help='Custom parameters for tbl2asn, examp
 parser.add_argument('-a','--annotations', help='Custom annotations, tsv 3 column file')
 parser.add_argument('--isolate', help='Isolate name (e.g. Af293)')
 parser.add_argument('--strain', help='Strain name (e.g. CEA10)')
+parser.add_argument('--prokaryote', action='store_true', help='Organism is prokaryote')
 parser.add_argument('--cpus', default=2, type=int, help='Number of CPUs to use')
 parser.add_argument('--iprscan', help='IPR5 XML file or folder of pre-computed InterProScan results')
 parser.add_argument('--antismash', help='antiSMASH results in genbank format')
@@ -196,7 +197,6 @@ def MEROPSBlast(input, cpus, evalue, tmpdir, output, diamond=True):
                     family = hits[0].description
                     out.write("%s\tnote\tMEROPS:%s\n" % (ID,sseqid))
 
-
 def PHIBlast(input, cpus, evalue, tmpdir, output):
     # written by Nichole Wespe, modeled on MEROPSBlast function
     # run blastp against phi-base
@@ -222,7 +222,6 @@ def PHIBlast(input, cpus, evalue, tmpdir, output):
                     if not ID.endswith('-T1'):
                         ID = ID + '-T1'
                     out.write("%s\tnote\tPHI-Base:%s\n" % (ID, sseqid))
-
 
 def SwissProtBlast(input, cpus, evalue, tmpdir, GeneDict, diamond=True):
     #run blastp against uniprot
@@ -273,7 +272,6 @@ def SwissProtBlast(input, cpus, evalue, tmpdir, GeneDict, diamond=True):
                     else:
                         GeneDict[ID].append({'name': passname, 'product': final_desc})
     lib.log.info('{:,} valid gene/product annotations from {:,} total'.format(counter, total))
-    
     
 def number_present(s):
     return any(i.isdigit() for i in s)
@@ -563,13 +561,13 @@ else:
             os.makedirs(os.path.join(outputdir, 'annotate_misc'))
             os.makedirs(os.path.join(outputdir, 'annotate_results'))
         else:
-            lib.log.error("Output directory %s already exists, will use any existing data.  If this is not what you want, exit, and provide a unique name for output folder" % (outputdir))
+            lib.log.error("Output directory %s already exists, will use any existing data. If this is not what you want, exit, and provide a unique name for output folder" % (outputdir))
         lib.log.info("Parsing input files")
         Scaffolds = os.path.join(outputdir, 'annotate_misc', 'genome.scaffolds.fasta')
-        Proteins = os.path.join(outputdir, 'annotate_misc','genome.proteins.fasta')
+        Proteins = os.path.join(outputdir, 'annotate_misc', 'genome.proteins.fasta')
         Transcripts = os.path.join(outputdir, 'annotate_misc', 'genome.transcripts.fasta')
-        TBL = os.path.join(outputdir, 'annotate_misc', 'genome.tbl')
-        GeneCounts = lib.gb2parts(genbank, TBL, Proteins, Transcripts, Scaffolds)
+        GBK_TBL = os.path.join(outputdir, 'annotate_misc', 'genome_gbk.tbl')  # don't use tbl file created from genbank file
+        GeneCounts = lib.gb2parts(genbank, GBK_TBL, Proteins, Transcripts, Scaffolds)
 
 #double check that you have a TBL file, otherwise will have nothing to append to.
 if not lib.checkannotations(TBL):
@@ -847,7 +845,7 @@ if lib.checkannotations(membrane_out):
     num_mem = lib.line_count(membrane_out)
 else:
     num_mem = 0
-lib.log.info('{0:,}'.format(num_secreted) + ' secretome and '+ '{0:,}'.format(num_mem) + ' transmembane annotations added')
+lib.log.info('{0:,}'.format(num_secreted) + ' secretome and '+ '{0:,}'.format(num_mem) + ' transmembrane annotations added')
 
 #interproscan
 IPRCombined = os.path.join(outputdir, 'annotate_misc', 'iprscan.xml')
@@ -963,7 +961,7 @@ if args.remove:
                 del Gene2ProdFinal[cols[0]]
 
 #now parse tbl file and add annotations
-lib.updateTBL(TBL, Annotations, TBLOUT)
+lib.updateTBL(TBL, Annotations, TBLOUT)  # ERROR: TBLOUT file is not being created...
 
 #if this is reannotation, then need to fix tbl file to track gene changes
 if WGS_accession:
@@ -1010,13 +1008,13 @@ if WGS_accession:
         
 
 #launch tbl2asn to create genbank submission files
-discrep = 'discrepency.report.txt'
+discrep = 'discrepancy.report.txt'
 lib.log.info("Converting to final Genbank format, good luck!")
 if not version:
     annot_version = 1
 else:
     annot_version = version
-tbl2asn_cmd = lib.runtbl2asn(os.path.join(outputdir, 'annotate_misc', 'tbl2asn'), SBT, discrep, organism, args.isolate, args.strain, args.tbl2asn, annot_version)
+tbl2asn_cmd = lib.runtbl2asn(os.path.join(outputdir, 'annotate_misc', 'tbl2asn'), SBT, discrep, organism, args.isolate, args.strain, args.tbl2asn, annot_version, args.prokaryote)
 
 #parse discrepancy report to see which names/product descriptions failed/passed
 BadProducts = lib.getFailedProductNames(discrep, Gene2ProdFinal) #return dict containing tuples of (GeneName, GeneProduct, [reason])
@@ -1045,7 +1043,7 @@ with open(MustFixHelp, 'w') as musthelp:
 
 #collected output files and rename accordingly
 ResultsFolder = os.path.join(outputdir, 'annotate_results')
-os.rename(discrep, os.path.join(ResultsFolder, organism_name+'.discrepency.report.txt'))
+os.rename(discrep, os.path.join(ResultsFolder, organism_name+'.discrepancy.report.txt'))
 final_gbk = os.path.join(ResultsFolder, organism_name+'.gbk')
 final_gff = os.path.join(ResultsFolder, organism_name+'.gff3')
 final_proteins = os.path.join(ResultsFolder, organism_name+'.proteins.fa')
@@ -1255,7 +1253,7 @@ if MustFixCount == 0 and PassedCounts == 0 and CurateCount == 0:
 else:
     lib.log.info("Funannotate annotate has completed successfully!\n\n\
     We need YOUR help to improve gene names/product descriptions:\n\
-       {:,} gene/products names MUST be fixed, see {:}\n\
+       {:,} gene/product names MUST be fixed, see {:}\n\
        {:,} gene/product names need to be curated, see {:}\n\
        {:,} gene/product names passed but are not in Database, see {:}\n\n\
     Please consider contributing a PR at https://github.com/nextgenusfs/gene2product\n".format(MustFixCount,MustFixHelp,CurateCount,Gene2ProductHelp,PassedCounts,Gene2ProductPassed))
