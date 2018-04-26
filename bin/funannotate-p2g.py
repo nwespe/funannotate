@@ -48,7 +48,7 @@ if args.filter == 'diamond':
     diamond_version = subprocess.Popen(['diamond', '--version'], stdout=subprocess.PIPE).communicate()[0].split('\n')[0]
     diamond_version = diamond_version.split('version ')[-1]
 
-def runDiamond(input, query, cpus, output):
+def runDiamond(input, query, cpus, output):  # input is masked genome (scaffolds), query is protein evidence, e.g. uniprot_sprot.fa
     #create DB of protein sequences
     cmd = ['diamond', 'makedb', '--threads', str(cpus), '--in', query, '--db', 'diamond']
     lib.runSubprocess(cmd, output, lib.log)

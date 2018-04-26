@@ -497,7 +497,18 @@ if not os.path.isdir(os.path.join(args.out, 'phibase')):
 
 #convert to counts
 PHIdf = lib.convert2counts(phibase)
+PHIdf['species'] = names
+PHIdf.set_index('species', inplace=True)
+# TODO: figure out what to do with PHIdf, create phibase/PHI.graph.pdf
+PHIdf.transpose().to_csv(os.path.join(args.out, 'phibase', 'PHI.all.results.csv'))
 
+#create html output
+with open(os.path.join(args.out, 'phi.html'), 'w') as output:
+    pd.set_option('display.max_colwidth', -1)
+    output.write(lib.HEADER)
+    output.write(lib.PHI)
+    output.write(PHIdf.transpose().to_html(escape=False, index=False, classes='table table-hover'))
+    output.write(lib.FOOTER)
 
 #######################################################
 
@@ -545,7 +556,7 @@ CAZyShort.transpose().to_csv(os.path.join(args.out, 'cazy', 'CAZyme.summary.resu
 if len(args.input) > 1:
     lib.drawStackedBar(CAZyShort, 'CAZyme families', CAZY, ymax, os.path.join(args.out, 'cazy', 'CAZy.graph.pdf'))
 
-#if num of cazys greater than 25, drawheatmap of all CAZys that have standard deviation > X
+#if num of cazys greater than 25, draw heatmap of all CAZys that have standard deviation > X
 if len(args.input) > 1:
     stdev = cazyall.std(axis=1)
     cazyall['stdev'] = stdev
@@ -1006,7 +1017,7 @@ with open(os.path.join(go_folder, 'associations.txt'), 'rU') as input:
 iprDict = lib.dictFlipLookup(ipr, INTERPRO)
 pfamDict = lib.dictFlipLookup(pfam, PFAM)
 meropsDict = lib.dictFlip(updatemerops)
-phiDict = lib.dictFlip(PHIdf)  # added by NW
+phiDict = lib.dictFlip(phibase)  # added by NW
 cazyDict = lib.dictFlip(cazy)
 TMDict = lib.busco_dictFlip(transmembrane)
 

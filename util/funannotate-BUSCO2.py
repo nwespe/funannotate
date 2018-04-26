@@ -89,7 +89,7 @@ class BUSCOLogger(logging.getLoggerClass()):
 
     def add_blank_line(self):
         """
-        This function add a blank line in the logs
+        This function adds a blank line in the logs
         """
         self.removeHandler(self._out_hdlr)
         self.addHandler(self._out_hdlr_blank_line)

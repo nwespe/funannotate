@@ -798,12 +798,12 @@ def createEVMsourcedict(evm_directory):
                 startstop = ''
                 sources = []
                 for line in source_file.readlines():
-                    if line[0] == '#':
+                    if line[0] == '!':
+                        continue
+                    elif line[0] == '#':  # beginning of new gene prediction, get start and stop from this line
                         startstop = line.split(' ')[6]
                         sources = []
-                    elif line[0] == '!':
-                        continue
-                    elif line.startswith('\n'):
+                    elif line.startswith('\n'):  # end of current gene prediction, compile program info from sources
                         sources = ' '.join(sources)
                         programs = []
                         if 'Prodigal' in sources:
@@ -813,17 +813,8 @@ def createEVMsourcedict(evm_directory):
                         if 'GeneMark' in sources:
                             programs.append('GeneMark-ES')
                         source_dict[(seqnum, startstop)] = programs
-                    else:
+                    else:  # line containing information for current gene prediction
                         sources.append(line.split('\t')[-1])
-                sources = ' '.join(sources)
-                programs = []
-                if 'Prodigal' in sources:
-                    programs.append('Prodigal')
-                if 'Augustus' in sources:
-                    programs.append('Augustus')
-                if 'GeneMark' in sources:
-                    programs.append('GeneMark-ES')
-                source_dict[(seqnum, startstop)] = programs
     return source_dict
 
 def updateTBL_genepred(input, sourceDict, versionDict, output):
@@ -3845,6 +3836,29 @@ def runtbl2asn(folder, template, discrepancy, organism, isolate, strain, paramet
     runSubprocess(cmd, '.', log)
     return ' '.join(cmd)
 
+def reformatGOterms(input, output):
+    '''
+    function to reformat GO annotations in final GenBank file for recognition by Pathway Tools
+    :param input: GenBank file created by tbl2asn
+    :param output: GenBank file with reformatted GO terms
+    '''
+    with open(output, 'w') as outgbk:
+        with open(input, 'rU') as ingbk:
+            for line in ingbk:
+                if 'GO_' in line:
+                    full_go_record = line
+                    while not full_go_record.endswith((';\n', '"\n')):
+                        full_go_record = full_go_record + next(ingbk)
+                    print full_go_record.lstrip()
+                    ending = full_go_record.split(']')[1]
+                    category_id, description_evidence = full_go_record.lstrip().split(' -')
+                    category, id = category_id.split(' ')
+                    description, evidence = description_evidence.split(' [Evidence')
+                    reformatted_line = '                     ' + category.lower() + description + ' [goid ' + id + '] [evidence IEA]' + ending
+                    outgbk.write(reformatted_line)
+                else:
+                    outgbk.write(line)
+
 def gb2smurf(input, prot_out, smurf_out):
     with open(smurf_out, 'w') as smurf:
         with open(prot_out, 'w') as proteins:
@@ -5639,6 +5653,7 @@ HEADER = '''
             <li><a href="interpro.html">InterPro</a></li>
             <li><a href="pfam.html">PFAM</a></li>
             <li><a href="merops.html">Merops</a></li>
+            <li><a href="phi.html">PHI-Base</a></li>
             <li><a href="cazy.html">CAZymes</a></li>
             <li><a href="cogs.html">COGs</a></li>
             <li><a href="signalp.html">SignalP</a></li>
@@ -5744,6 +5759,16 @@ SECMET = '''
         <div class="table-responsive">
 '''
 
+PHI = '''
+    <div class="container">
+      <div class="starter-template">
+        <h2 class="sub-header">PHI-Base Annotations per Genome Results</h2>
+        <div class='row'>
+        <a href='phibase/PHI.graph.pdf'><img src="phibase/PHI.graph.pdf" height="500" /></a></div>
+        </div>
+        <div class="table-responsive">
+'''
+
 CAZY = '''
     <div class="container">
       <div class="starter-template">
@@ -5770,17 +5795,20 @@ GO = '''
         <h2 class="sub-header">GO ontology enrichment Results</h2>
         <div class='row'>
 '''
+
 MISSING = '''
     <div class="container">
       <div class="starter-template">
         <h2 class="sub-header">These data are missing from annotation.</h2>
 '''
+
 CITATION = '''
     <div class="container">
       <div class="starter-template">
         <h3 class="sub-header">If you found Funannotate useful please cite:</h3>
         <p>Palmer JM. 2016. Funannotate: a fungal genome annotation and comparative genomics pipeline. <a href="https://github.com/nextgenusfs/funannotate">https://github.com/nextgenusfs/funannotate</a>.</p>
 '''
+
 FOOTER = '''
           </div>  
       </div>

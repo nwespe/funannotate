@@ -252,11 +252,12 @@ def SwissProtBlast(input, cpus, evalue, tmpdir, GeneDict, diamond=True):
                 if diff < 0.6:
                     continue
                 hdescript = hits[0].description.split(' OS=')[0]
-                name = hits[0].description.split('GN=')[-1]
-                name = name.split(' ')[0].upper()
-                name = name.replace('-', '')
-                passname = None
-                if not '_' in name and not ' ' in name and not '.' in name and number_present(name) and len(name) > 2 and not morethanXnumbers(name, 3):
+                if 'GN=' in hits[0].description:  # not all entries have GN field
+                    name = hits[0].description.split('GN=')[-1]
+                    name = name.split(' ')[0]#.upper()  # removes PE, SV fields
+                    #name = name.replace('-', '')
+                    passname = None
+                    #if not '_' in name and not ' ' in name and not '.' in name and number_present(name) and len(name) > 2 and not morethanXnumbers(name, 3):
                     passname = name
                 #need to do some filtering here of certain words
                 bad_words = ['(Fragment)', 'homolog', 'homolog,', 'AltName:']
@@ -354,8 +355,8 @@ def parseEggNoggMapper(input, output, GeneDict):
                         NOG = 'ENOG41'+ x.split('@')[0]
                 Gene = ''
                 if cols[Genei] != '':
-                    if not '_' in cols[Genei] and not '.' in cols[Genei] and number_present(cols[Genei]) and len(cols[Genei]) > 2 and not morethanXnumbers(cols[Genei], 3):
-                        Gene = cols[Genei]
+                    #if not '_' in cols[Genei] and not '.' in cols[Genei] and number_present(cols[Genei]) and len(cols[Genei]) > 2 and not morethanXnumbers(cols[Genei], 3):
+                    Gene = cols[Genei]
                 Description = cols[Desci].split('. ')[0]
                 if NOG == '':
                     continue
@@ -530,7 +531,7 @@ else:
     elif os.path.isdir(os.path.join(args.input, 'predict_results')):
         inputdir = os.path.join(args.input, 'predict_results')
         outputdir = args.input
-    else:
+    else:  # This will be the default for pipeline (specification of folder containing the results files from predict
         inputdir = os.path.join(args.input) #here user specified the predict_results folder, or it is a custom folder
 
     #get files that you need
@@ -553,7 +554,7 @@ else:
             if not args.out:
                 outputdir = inputdir #output the results in the input directory
             else:
-                outputdir = args.out
+                outputdir = args.out  # This will be the default for pipeline
                 if not os.path.isdir(outputdir):
                     os.makedirs(outputdir)
         #create output directories
@@ -647,7 +648,7 @@ GeneProducts = {}
 
 #run SwissProt Blast search
 lib.log.info("Running Diamond blastp search of UniProt DB version %s" % versDB.get('uniprot'))
-blast_out = os.path.join(outputdir, 'annotate_misc', 'annotations.swissprot.txt')
+blast_out = os.path.join(outputdir, 'annotate_misc', 'annotations.swissprot.txt')  # this line doesn't get used
 SwissProtBlast(Proteins, args.cpus, 1e-5, os.path.join(outputdir, 'annotate_misc'), GeneProducts)
 #num_annotations = lib.line_count(blast_out)
 #lib.log.info('{0:,}'.format(num_annotations) + ' annotations added')
@@ -1015,6 +1016,9 @@ if not version:
 else:
     annot_version = version
 tbl2asn_cmd = lib.runtbl2asn(os.path.join(outputdir, 'annotate_misc', 'tbl2asn'), SBT, discrep, organism, args.isolate, args.strain, args.tbl2asn, annot_version, args.prokaryote)
+tbl2asn_gbk = os.path.join(outputdir, 'annotate_misc', 'tbl2asn', 'genome.gbf')
+reformatted_gbk = os.path.join(outputdir, 'annotate_misc', 'reformatted_genome.gbk')
+lib.reformatGOterms(tbl2asn_gbk, reformatted_gbk)
 
 #parse discrepancy report to see which names/product descriptions failed/passed
 BadProducts = lib.getFailedProductNames(discrep, Gene2ProdFinal) #return dict containing tuples of (GeneName, GeneProduct, [reason])

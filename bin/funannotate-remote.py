@@ -250,7 +250,7 @@ if 'antismash' in args.methods or 'all' in args.methods:
     running = as_status.json()['running']
     lib.log.info("Connecting to antiSMASH %s v%s webserver" % (tax, as_vers))
     lib.log.info("Queue Length: %s; Jobs Running: %s" % (queue, running))
-    lib.log.info("PLEASE to not abuse the webserver, be considerate!")
+    lib.log.info("PLEASE do not abuse the webserver, be considerate!")
     if int(queue) > 10 and not args.force:
         lib.log.error("There are more than 10 antiSMASH jobs in queue, use --force to submit anyway")
         sys.exit(1)
